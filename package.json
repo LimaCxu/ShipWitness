@@ -1,0 +1,17 @@
+{
+  "name": "shipwitness",
+  "version": "0.2.0",
+  "description": "Evidence-first release acceptance for AI-built software.",
+  "license": "MIT",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check lib/store.js && node --check outputs/shipwitness-prototype/app.js && node --check outputs/shipwitness-prototype/api.js && node --test"
+  }
+}
