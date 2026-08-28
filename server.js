@@ -7,13 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { JsonStore, createId } from './lib/store.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
+import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.0';
+const serviceVersion = '0.4.0-dev.1';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -21,8 +22,8 @@ const securityHeaders = {
   'x-frame-options': 'DENY'
 };
 
-const json = (res, status, body) => {
-  res.writeHead(status, { ...securityHeaders, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+const json = (res, status, body, headers = {}) => {
+  res.writeHead(status, { ...securityHeaders, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 };
 
@@ -43,6 +44,15 @@ const required = (value, field) => {
   if (typeof value !== 'string' || !value.trim()) throw Object.assign(new Error(`${field}不能为空`), { status: 400 });
   return value.trim();
 };
+
+const normalizedEmail = value => {
+  const email = required(value, '邮箱').toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('邮箱格式无效'), { status: 400 });
+  return email;
+};
+
+const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt });
+const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
 
 async function checkRepository(repoPath) {
   try {
@@ -99,19 +109,117 @@ async function executeRun(project, run) {
 export function createApp({ storeFile = defaultStore } = {}) {
   const store = new JsonStore(storeFile);
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
+  const loginAttempts = new Map();
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean);
+      const secureCookie = req.headers['x-forwarded-proto'] === 'https';
+
+      if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin) {
+        const expectedOrigin = `${secureCookie ? 'https' : 'http'}://${req.headers.host}`;
+        if (req.headers.origin !== expectedOrigin) return json(res, 403, { error: '请求来源无效' });
+      }
 
       if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'shipwitness', version: serviceVersion, uptimeSeconds: Math.round(process.uptime()), storage: 'json-file' });
-      if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects);
+      if (req.method === 'GET' && url.pathname === '/api/setup/status') {
+        const data = await store.read();
+        return json(res, 200, { needsSetup: !data.users.length });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/setup') {
+        const input = await body(req);
+        const passwordHash = await hashPassword(input.password);
+        const created = await store.update(data => {
+          if (data.users.length) throw Object.assign(new Error('系统已经完成初始化'), { status: 409 });
+          const now = new Date().toISOString();
+          const workspace = { id: createId('ws'), name: required(input.workspaceName || '默认工作区', '工作区名称'), createdAt: now };
+          const user = { id: createId('usr'), email: normalizedEmail(input.email), name: required(input.name || '管理员', '姓名'), passwordHash, createdAt: now };
+          const membership = { id: createId('mem'), workspaceId: workspace.id, userId: user.id, role: 'owner', createdAt: now };
+          const token = createSessionToken();
+          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: workspace.id, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now };
+          data.workspaces.push(workspace); data.users.push(user); data.memberships.push(membership); data.sessions.push(session);
+          for (const collection of ['projects', 'contracts', 'runs', 'issues', 'decisions']) for (const item of data[collection]) item.workspaceId ||= workspace.id;
+          return { user, workspace, membership, token };
+        });
+        return json(res, 201, { user: publicUser(created.user), workspace: created.workspace, role: created.membership.role }, { 'set-cookie': sessionCookie(created.token, { secure: secureCookie }) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/login') {
+        const input = await body(req); const email = normalizedEmail(input.email); const attemptKey = `${req.socket.remoteAddress}:${email}`; const nowMs = Date.now();
+        const attempt = loginAttempts.get(attemptKey); if (attempt && attempt.count >= 5 && nowMs - attempt.startedAt < 15 * 60_000) return json(res, 429, { error: '登录尝试过多，请 15 分钟后重试' });
+        const data = await store.read();
+        const user = data.users.find(item => item.email === email);
+        if (!user || !await verifyPassword(input.password, user.passwordHash)) { loginAttempts.set(attemptKey, { count: (attempt?.count || 0) + 1, startedAt: attempt?.startedAt || nowMs }); return json(res, 401, { error: '邮箱或密码错误' }); }
+        loginAttempts.delete(attemptKey);
+        const membership = data.memberships.find(item => item.userId === user.id);
+        if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
+        const token = createSessionToken(); const now = new Date().toISOString();
+        await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now }); });
+        const workspace = data.workspaces.find(item => item.id === membership.workspaceId);
+        return json(res, 200, { user: publicUser(user), workspace, role: membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
+      }
+
+      const authData = await store.read();
+      const token = readSessionToken(req.headers.cookie);
+      const tokenHash = sessionTokenHash(token);
+      const session = authData.sessions.find(item => item.tokenHash === tokenHash && new Date(item.expiresAt) > new Date());
+      const currentUser = session && authData.users.find(item => item.id === session.userId);
+      const currentWorkspace = session && authData.workspaces.find(item => item.id === session.workspaceId);
+      const membership = session && authData.memberships.find(item => item.userId === session.userId && item.workspaceId === session.workspaceId);
+      if (url.pathname.startsWith('/api/') && !session) return json(res, 401, { error: '请先登录' });
+      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, { user: publicUser(currentUser), workspace: currentWorkspace, role: membership?.role });
+      if (req.method === 'POST' && url.pathname === '/api/logout') {
+        await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== tokenHash); });
+        return json(res, 200, { ok: true }, { 'set-cookie': clearSessionCookie(secureCookie) });
+      }
+
+      const workspaceId = session?.workspaceId;
+      const requireRole = roles => {
+        if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
+      };
+      if (req.method === 'GET' && url.pathname === '/api/workspaces') {
+        const ids = authData.memberships.filter(item => item.userId === currentUser.id).map(item => item.workspaceId);
+        return json(res, 200, authData.workspaces.filter(item => ids.includes(item.id)).map(item => ({ ...item, current: item.id === workspaceId })));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/workspaces') {
+        const input = await body(req); const now = new Date().toISOString();
+        const workspace = await store.update(data => {
+          const value = { id: createId('ws'), name: required(input.name, '工作区名称'), createdAt: now };
+          data.workspaces.push(value); data.memberships.push({ id: createId('mem'), workspaceId: value.id, userId: currentUser.id, role: 'owner', createdAt: now });
+          const active = data.sessions.find(item => item.tokenHash === tokenHash); active.workspaceId = value.id;
+          return value;
+        });
+        return json(res, 201, workspace);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments[3] === 'select') {
+        const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2]);
+        if (!targetMembership) return json(res, 404, { error: '工作区不存在' });
+        await store.update(data => { data.sessions.find(item => item.tokenHash === tokenHash).workspaceId = targetMembership.workspaceId; });
+        return json(res, 200, { workspace: authData.workspaces.find(item => item.id === targetMembership.workspaceId), role: targetMembership.role });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/members') {
+        const members = authData.memberships.filter(item => item.workspaceId === workspaceId).map(item => ({ ...publicUser(authData.users.find(user => user.id === item.userId)), role: item.role, membershipId: item.id }));
+        return json(res, 200, members);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/members') {
+        requireRole(['owner']);
+        const input = await body(req); const email = normalizedEmail(input.email); const role = input.role || 'member';
+        if (!['owner', 'approver', 'member'].includes(role)) return json(res, 400, { error: '成员角色无效' });
+        const passwordHash = await hashPassword(input.password);
+        const member = await store.update(data => {
+          let user = data.users.find(item => item.email === email); const now = new Date().toISOString();
+          if (!user) { user = { id: createId('usr'), email, name: required(input.name, '姓名'), passwordHash, createdAt: now }; data.users.push(user); }
+          if (data.memberships.some(item => item.workspaceId === workspaceId && item.userId === user.id)) throw Object.assign(new Error('该用户已经是工作区成员'), { status: 409 });
+          const item = { id: createId('mem'), workspaceId, userId: user.id, role, createdAt: now }; data.memberships.push(item); return { ...publicUser(user), role, membershipId: item.id };
+        });
+        return json(res, 201, member);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
         const input = await body(req);
         const project = await store.update(data => {
           const now = new Date().toISOString();
-          const existing = data.projects.find(item => item.id === input.id);
-          const value = { id: existing?.id || createId('prj'), name: required(input.name || '未命名项目', '项目名称'), repo: required(input.repo, '项目目录'), url: required(input.url, '测试网址'), branch: required(input.branch || 'main', '代码分支'), handoffMode: input.handoffMode || 'file', updatedAt: now, createdAt: existing?.createdAt || now };
+          const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
+          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: required(input.repo, '项目目录'), url: required(input.url, '测试网址'), branch: required(input.branch || 'main', '代码分支'), handoffMode: input.handoffMode || 'file', updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
           return value;
         });
@@ -119,7 +227,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[3] === 'preflight') {
         const data = await store.read();
-        const project = data.projects.find(item => item.id === segments[2]);
+        const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!project) return json(res, 404, { error: '项目不存在' });
         const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url), checkBrowserAvailability()]);
         const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
@@ -127,7 +235,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/contracts') {
         const data = await store.read();
-        const contracts = (data.contracts || []).filter(item => !url.searchParams.get('projectId') || item.projectId === url.searchParams.get('projectId'));
+        const contracts = (data.contracts || []).filter(item => item.workspaceId === workspaceId && (!url.searchParams.get('projectId') || item.projectId === url.searchParams.get('projectId')));
         contracts.sort((a, b) => Number(b.enabled) - Number(a.enabled) || b.updatedAt.localeCompare(a.updatedAt));
         return json(res, 200, contracts);
       }
@@ -135,11 +243,11 @@ export function createApp({ storeFile = defaultStore } = {}) {
         const input = await body(req);
         const contract = await store.update(data => {
           data.contracts ||= [];
-          if (!data.projects.some(item => item.id === input.projectId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
           const code = required(input.code, '标准编号').toUpperCase();
           if (data.contracts.some(item => item.projectId === input.projectId && item.code === code)) throw Object.assign(new Error('标准编号已存在'), { status: 409 });
           const now = new Date().toISOString();
-          const value = { id: createId('ctr'), projectId: input.projectId, code, title: required(input.title, '标准名称'), description: required(input.description, '标准描述'), category: input.category || '业务流程', severity: input.severity || 'blocker', steps: normalizeSteps(input.steps), enabled: input.enabled !== false, version: 1, createdAt: now, updatedAt: now };
+          const value = { id: createId('ctr'), workspaceId, projectId: input.projectId, code, title: required(input.title, '标准名称'), description: required(input.description, '标准描述'), category: input.category || '业务流程', severity: input.severity || 'blocker', steps: normalizeSteps(input.steps), enabled: input.enabled !== false, version: 1, createdAt: now, updatedAt: now };
           data.contracts.unshift(value);
           return value;
         });
@@ -149,7 +257,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
         const input = await body(req);
         const contract = await store.update(data => {
           data.contracts ||= [];
-          const current = data.contracts.find(item => item.id === segments[2]);
+          const current = data.contracts.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!current) throw Object.assign(new Error('验收标准不存在'), { status: 404 });
           if ('title' in input) current.title = required(input.title, '标准名称');
           if ('description' in input) current.description = required(input.description, '标准描述');
@@ -163,30 +271,30 @@ export function createApp({ storeFile = defaultStore } = {}) {
         });
         return json(res, 200, contract);
       }
-      if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, (await store.read()).runs);
+      if (req.method === 'GET' && url.pathname === '/api/runs') return json(res, 200, (await store.read()).runs.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'runs' && segments[2] && segments.length === 3) {
         const data = await store.read();
-        const run = data.runs.find(item => item.id === segments[2]);
+        const run = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         return run ? json(res, 200, run) : json(res, 404, { error: '验收记录不存在' });
       }
       if (req.method === 'POST' && url.pathname === '/api/runs') {
         const input = await body(req);
         const run = await store.update(data => {
-          if (!data.projects.some(item => item.id === input.projectId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
-          const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
-          const value = { id: createId('run'), projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', createdAt: new Date().toISOString() };
+          const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
+          const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', createdAt: new Date().toISOString() };
           data.runs.unshift(value); return value;
         });
         return json(res, 201, run);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'runs' && segments[2] && segments[3] === 'execute') {
         const snapshot = await store.read();
-        const run = snapshot.runs.find(item => item.id === segments[2]);
+        const run = snapshot.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
         if (run.status === 'running') return json(res, 409, { error: '任务正在执行' });
-        const project = snapshot.projects.find(item => item.id === run.projectId);
+        const project = snapshot.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
         if (!project) return json(res, 409, { error: '任务关联的项目不存在' });
         await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'running'; current.startedAt = new Date().toISOString(); });
         try {
@@ -214,7 +322,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
       if (req.method === 'POST' && url.pathname === '/api/issues') {
         const input = await body(req);
         const issue = await store.update(data => {
-          const run = data.runs.find(item => item.id === input.runId);
+          const run = data.runs.find(item => item.id === input.runId && item.workspaceId === workspaceId);
           if (!run) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
           const criterion = input.criterionId ? run.criteria.find(item => (item.contractId || item.code) === input.criterionId) : null;
           const result = criterion && run.execution?.criteriaResults?.find(item => item.title === criterion.title);
@@ -224,7 +332,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
           if (duplicate) throw Object.assign(new Error('该失败项已有未关闭的返工单'), { status: 409 });
           const now = new Date().toISOString();
           const value = {
-            id: createId('issue'), runId: run.id, projectId: run.projectId,
+            id: createId('issue'), workspaceId, runId: run.id, projectId: run.projectId,
             criterionId: input.criterionId || null, code: criterion?.code || input.code || 'ISSUE',
             title: required(input.title || `${criterion?.title || '验收项'}需要返工`, '标题'),
             contract: required(input.contract || criterion?.description, '验收标准'),
@@ -242,14 +350,14 @@ export function createApp({ storeFile = defaultStore } = {}) {
       if (req.method === 'GET' && url.pathname === '/api/issues') {
         const data = await store.read();
         const runId = url.searchParams.get('runId');
-        const issues = data.issues.filter(item => !runId || item.runId === runId || item.retestRunId === runId);
+        const issues = data.issues.filter(item => item.workspaceId === workspaceId && (!runId || item.runId === runId || item.retestRunId === runId));
         return json(res, 200, issues);
       }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments.length === 3) {
         const input = await body(req);
         const allowed = ['open', 'handed_off', 'fixed', 'verified', 'closed'];
         const issue = await store.update(data => {
-          const current = data.issues.find(item => item.id === segments[2]);
+          const current = data.issues.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!current) throw Object.assign(new Error('返工单不存在'), { status: 404 });
           if (!allowed.includes(input.status)) throw Object.assign(new Error('返工单状态无效'), { status: 400 });
           if (current.status !== input.status) {
@@ -264,14 +372,14 @@ export function createApp({ storeFile = defaultStore } = {}) {
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments[3] === 'retest') {
         const retest = await store.update(data => {
-          const issue = data.issues.find(item => item.id === segments[2]);
+          const issue = data.issues.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!issue) throw Object.assign(new Error('返工单不存在'), { status: 404 });
-          const source = data.runs.find(item => item.id === issue.runId);
+          const source = data.runs.find(item => item.id === issue.runId && item.workspaceId === workspaceId);
           if (!source) throw Object.assign(new Error('原验收记录不存在'), { status: 409 });
           const criteria = issue.criterionId ? source.criteria.filter(item => (item.contractId || item.code) === issue.criterionId) : source.criteria;
           if (!criteria.length) throw Object.assign(new Error('没有可复验的标准'), { status: 409 });
           const now = new Date().toISOString();
-          const run = { id: createId('run'), projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', parentRunId: source.id, issueIds: [issue.id], createdAt: now };
+          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', parentRunId: source.id, issueIds: [issue.id], createdAt: now };
           data.runs.unshift(run);
           issue.status = 'retesting'; issue.retestRunId = run.id; issue.updatedAt = now;
           issue.timeline ||= []; issue.timeline.push({ status: 'retesting', at: now, note: `已创建复验任务 ${run.id}` });
@@ -280,17 +388,23 @@ export function createApp({ storeFile = defaultStore } = {}) {
         return json(res, 201, retest);
       }
       if (req.method === 'POST' && url.pathname === '/api/decisions') {
+        requireRole(['owner', 'approver']);
         const input = await body(req);
-        const decision = await store.update(data => { const value = { id: createId('decision'), runId: required(input.runId, '验收记录'), owner: required(input.owner, '负责人'), verdict: required(input.verdict, '决定'), note: input.note || '', createdAt: new Date().toISOString() }; data.decisions.unshift(value); return value; });
+        const decision = await store.update(data => {
+          const runId = required(input.runId, '验收记录');
+          if (!data.runs.some(item => item.id === runId && item.workspaceId === workspaceId)) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          const value = { id: createId('decision'), workspaceId, runId, owner: required(input.owner, '负责人'), verdict: required(input.verdict, '决定'), note: input.note || '', createdAt: new Date().toISOString() }; data.decisions.unshift(value); return value;
+        });
         return json(res, 201, decision);
       }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'dossiers' && segments[2]) {
         const data = await store.read();
-        const run = data.runs.find(item => item.id === segments[2]);
+        const run = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
-        return json(res, 200, { schema: 'shipwitness.dossier.v1', run, issues: data.issues.filter(item => item.runId === run.id), decisions: data.decisions.filter(item => item.runId === run.id) });
+        return json(res, 200, { schema: 'shipwitness.dossier.v1', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id) });
       }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'evidence' && segments[2] && segments[3] && segments.length === 4) {
+        if (!authData.runs.some(item => item.id === segments[2] && item.workspaceId === workspaceId)) return json(res, 404, { error: '验收记录不存在' });
         const evidenceRoot = resolve(artifactsDir, segments[2]);
         const file = resolve(evidenceRoot, normalize(segments[3]));
         if (!file.startsWith(`${evidenceRoot}/`) || extname(file) !== '.png') return json(res, 403, { error: '禁止访问' });

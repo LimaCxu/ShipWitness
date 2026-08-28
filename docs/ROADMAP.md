@@ -16,8 +16,9 @@
 ## 0.4 — Team workflow
 
 - [x] Evidence-linked issues, handoff state, and focused retest runs
-- Authentication and workspace isolation
-- Roles, approvals, audit timeline, and issue integrations
+- [x] Authentication and workspace isolation
+- [x] Owner, approver, and member roles with member management
+- Approval audit timeline and issue integrations
 - PostgreSQL storage and migrations
 
 ## 1.0 — Self-hosted release gate

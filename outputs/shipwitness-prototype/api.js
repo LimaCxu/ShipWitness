@@ -22,6 +22,47 @@ const defaultContracts = [
   { code: 'SESSION-01', title: '安全退出', description: '退出后访问受保护页面，必须返回登录页。', category: '安全', severity: 'blocker' }
 ];
 
+document.body.insertAdjacentHTML('beforeend', `<div class="auth-gate" id="authGate" hidden><section class="auth-card"><div class="auth-brand"><span>S</span><div><b>ShipWitness</b><small>发布验收台</small></div></div><div class="auth-copy"><span id="authEyebrow">安全工作区</span><h1 id="authTitle">登录 ShipWitness</h1><p id="authDescription">验收证据、返工单和发布决定只对工作区成员可见。</p></div><form id="authForm"><label id="workspaceField" hidden><span>工作区名称</span><input id="authWorkspace" autocomplete="organization" value="我的工作区"></label><label id="nameField" hidden><span>你的姓名</span><input id="authName" autocomplete="name" value="管理员"></label><label><span>邮箱</span><input id="authEmail" type="email" autocomplete="username" required placeholder="owner@example.com"></label><label><span>密码</span><input id="authPassword" type="password" autocomplete="current-password" minlength="10" required placeholder="至少 10 个字符"></label><p class="auth-error" id="authError" hidden></p><button type="submit" id="authSubmit">登录</button></form><footer>本地私有部署 · 会话使用 HttpOnly 安全 Cookie</footer></section></div>`);
+const accountSlot = document.createElement('div'); accountSlot.className = 'account-slot'; accountSlot.innerHTML = '<button id="accountBtn">—</button><button id="logoutBtn">退出</button>'; document.querySelector('.bar-actions').prepend(accountSlot);
+document.body.insertAdjacentHTML('beforeend', `<aside class="account-panel" id="accountPanel" aria-hidden="true"><header><div><span>组织与权限</span><h2>工作区管理</h2></div><button id="closeAccount" aria-label="关闭">×</button></header><section class="workspace-section"><div class="section-title"><div><b>我的工作区</b><small>切换后只显示该工作区的数据</small></div></div><div id="workspaceList" class="workspace-list"></div><form id="workspaceForm" class="inline-create"><input id="newWorkspaceName" placeholder="新工作区名称" required><button>创建</button></form></section><section class="member-section"><div class="section-title"><div><b>成员与角色</b><small>管理员可新增成员并分配权限</small></div></div><div id="memberList" class="member-list"></div><form id="memberForm" class="member-form"><div><input id="memberName" placeholder="成员姓名" required><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><input id="memberPassword" type="password" minlength="10" placeholder="初始密码（至少 10 位）" required><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select></div><button>添加成员</button><small>请通过安全方式把初始密码交给成员。</small></form></section></aside><div class="account-mask" id="accountMask" hidden></div>`);
+let authMode = 'login';
+let currentSession = null;
+const showAuth = mode => {
+  authMode = mode; authGate.hidden = false; document.body.classList.add('auth-locked');
+  const setup = mode === 'setup'; workspaceField.hidden = !setup; nameField.hidden = !setup;
+  authTitle.textContent = setup ? '创建第一个安全工作区' : '登录 ShipWitness';
+  authEyebrow.textContent = setup ? '首次初始化' : '安全工作区';
+  authDescription.textContent = setup ? '创建本机管理员。现有项目数据会安全归入这个工作区。' : '验收证据、返工单和发布决定只对工作区成员可见。';
+  authSubmit.textContent = setup ? '创建并进入工作区' : '登录';
+  authPassword.autocomplete = setup ? 'new-password' : 'current-password';
+};
+const hideAuth = session => { currentSession = session; authGate.hidden = true; document.body.classList.remove('auth-locked'); accountBtn.textContent = `${session.workspace.name} · ${session.user.name}`; };
+
+authForm.onsubmit = async event => {
+  event.preventDefault(); authSubmit.disabled = true; authError.hidden = true;
+  try {
+    const path = authMode === 'setup' ? '/api/setup' : '/api/login';
+    const payload = { email: authEmail.value, password: authPassword.value, ...(authMode === 'setup' ? { workspaceName: authWorkspace.value, name: authName.value } : {}) };
+    const session = await api(path, { method: 'POST', body: JSON.stringify(payload) });
+    hideAuth(session); await bootstrapBackend();
+  } catch (error) { authError.textContent = error.message; authError.hidden = false; }
+  finally { authSubmit.disabled = false; }
+};
+logoutBtn.onclick = async () => { try { await api('/api/logout', { method: 'POST' }); location.reload(); } catch (error) { toast(error.message); } };
+const roleLabel = role => ({ owner: '管理员', approver: '审批人', member: '成员' }[role] || role);
+const toggleAccount = open => { accountPanel.classList.toggle('open', open); accountPanel.setAttribute('aria-hidden', String(!open)); accountMask.hidden = !open; };
+async function loadAccountPanel() {
+  const [workspaces, members] = await Promise.all([api('/api/workspaces'), api('/api/members')]);
+  workspaceList.innerHTML = workspaces.map(item => `<button data-workspace-id="${item.id}" ${item.current ? 'disabled' : ''}><span><b>${escapeHtml(item.name)}</b><small>${item.current ? '当前工作区' : '点击切换'}</small></span><em>${item.current ? '当前' : '切换'}</em></button>`).join('');
+  memberList.innerHTML = members.map(item => `<article><span>${escapeHtml(item.name).slice(0, 1).toUpperCase()}</span><div><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.email)}</small></div><em>${roleLabel(item.role)}</em></article>`).join('');
+  memberForm.hidden = currentSession?.role !== 'owner';
+  toggleAccount(true);
+}
+accountBtn.onclick = () => loadAccountPanel().catch(error => toast(error.message)); closeAccount.onclick = () => toggleAccount(false); accountMask.onclick = () => toggleAccount(false);
+workspaceList.onclick = async event => { const button = event.target.closest('[data-workspace-id]'); if (!button || button.disabled) return; await api(`/api/workspaces/${button.dataset.workspaceId}/select`, { method: 'POST' }); location.reload(); };
+workspaceForm.onsubmit = async event => { event.preventDefault(); try { await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: newWorkspaceName.value }) }); location.reload(); } catch (error) { toast(error.message); } };
+memberForm.onsubmit = async event => { event.preventDefault(); try { await api('/api/members', { method: 'POST', body: JSON.stringify({ name: memberName.value, email: memberEmail.value, password: memberPassword.value, role: memberRole.value }) }); memberForm.reset(); await loadAccountPanel(); toast('成员已加入当前工作区'); } catch (error) { toast(error.message); } };
+
 document.body.insertAdjacentHTML('beforeend', `<aside class="run-task-panel" id="runTaskPanel" aria-hidden="true"><header><div><span>真实任务</span><h2>验收执行详情</h2></div><button id="closeRunTask" aria-label="关闭">×</button></header><section class="run-task-state"><div><span id="runTaskId">—</span><strong id="runTaskStatus">等待读取</strong></div><p id="runTaskSummary">从后端读取任务状态和真实执行证据。</p></section><section class="system-evidence" id="systemEvidence"><div class="empty-task">尚未执行检查</div></section><section class="criteria-results"><span class="field-label">验收标准</span><div id="backendCriteria"></div></section><footer><p id="runTaskBoundary">只有配置了浏览器步骤和结果断言的标准才可能自动通过。</p><button id="executeRunBtn">执行验收</button></footer></aside><div class="run-task-mask" id="runTaskMask" hidden></div>`);
 document.body.insertAdjacentHTML('beforeend', `<aside class="contracts-panel" id="contractsPanel" aria-hidden="true"><header><div><span>项目资产</span><h2>验收标准库</h2><p>标准会在任务创建时生成独立快照，后续修改不会改变历史验收。</p></div><button id="closeContracts" aria-label="关闭">×</button></header><section class="contracts-toolbar"><div><b id="activeContractCount">0 条启用</b><small>停用标准不会进入新任务</small></div><button id="newContractBtn">＋ 新增标准</button></section><form class="contract-editor" id="contractEditor" hidden><input type="hidden" id="contractEditId"><div class="contract-form-row"><label><span>标准编号</span><input id="contractCode" placeholder="例如 AUTH-02" required></label><label><span>标准名称</span><input id="contractTitle" placeholder="用户能看懂的结果" required></label></div><label><span>正确结果描述</span><textarea id="contractDescription" rows="3" required></textarea></label><div class="contract-form-row"><label><span>分类</span><select id="contractCategory"><option>业务流程</option><option>权限</option><option>数据</option><option>安全</option><option>性能</option></select></label><label><span>级别</span><select id="contractSeverity"><option value="blocker">阻断发布</option><option value="major">重要</option><option value="minor">一般</option></select></label></div><section class="step-builder"><header><div><b>浏览器执行步骤</b><small>至少包含一个“检查”步骤，才可能自动通过</small></div><button type="button" id="addContractStep">＋ 添加步骤</button></header><div id="contractSteps"></div></section><footer><button type="button" class="contract-cancel" id="cancelContractEdit">取消</button><button type="submit" class="contract-save">保存标准</button></footer></form><section class="contract-list" id="contractList"><div class="contract-empty">正在读取标准…</div></section></aside><div class="contracts-mask" id="contractsMask" hidden></div>`);
 
@@ -265,7 +306,15 @@ contractList.onclick = async event => {
   catch (error) { toast(error.message); }
 };
 
-bootstrapBackend();
+async function bootstrapApp() {
+  try {
+    const setup = await api('/api/setup/status');
+    if (setup.needsSetup) return showAuth('setup');
+    try { const session = await api('/api/session'); hideAuth(session); await bootstrapBackend(); }
+    catch { showAuth('login'); }
+  } catch { setServiceState(false, '后端未启动'); showAuth('login'); }
+}
+bootstrapApp();
 
 const toggleRunTask = open => { runTaskPanel.classList.toggle('open', open); runTaskPanel.setAttribute('aria-hidden', String(!open)); runTaskMask.hidden = !open; };
 const resultLabel = value => ({ ready: '已就绪', passed: '已通过', warning: '注意', failed: '未通过', blocked: '被阻断', evidence_insufficient: '证据不足' }[value] || value);
