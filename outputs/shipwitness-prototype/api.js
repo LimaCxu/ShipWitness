@@ -24,7 +24,7 @@ const defaultContracts = [
 
 document.body.insertAdjacentHTML('beforeend', `<div class="auth-gate" id="authGate" hidden><section class="auth-card"><div class="auth-brand"><span>S</span><div><b>ShipWitness</b><small>发布验收台</small></div></div><div class="auth-copy"><span id="authEyebrow">安全工作区</span><h1 id="authTitle">登录 ShipWitness</h1><p id="authDescription">验收证据、返工单和发布决定只对工作区成员可见。</p></div><form id="authForm"><label id="workspaceField" hidden><span>工作区名称</span><input id="authWorkspace" autocomplete="organization" value="我的工作区"></label><label id="nameField" hidden><span>你的姓名</span><input id="authName" autocomplete="name" value="管理员"></label><label><span>邮箱</span><input id="authEmail" type="email" autocomplete="username" required placeholder="owner@example.com"></label><label><span>密码</span><input id="authPassword" type="password" autocomplete="current-password" minlength="10" required placeholder="至少 10 个字符"></label><p class="auth-error" id="authError" hidden></p><button type="submit" id="authSubmit">登录</button></form><footer>本地私有部署 · 会话使用 HttpOnly 安全 Cookie</footer></section></div>`);
 const accountSlot = document.createElement('div'); accountSlot.className = 'account-slot'; accountSlot.innerHTML = '<button id="accountBtn">—</button><button id="logoutBtn">退出</button>'; document.querySelector('.bar-actions').prepend(accountSlot);
-document.body.insertAdjacentHTML('beforeend', `<aside class="account-panel" id="accountPanel" aria-hidden="true"><header><div><span>组织与权限</span><h2>工作区管理</h2></div><button id="closeAccount" aria-label="关闭">×</button></header><section class="workspace-section"><div class="section-title"><div><b>我的工作区</b><small>切换后只显示该工作区的数据</small></div></div><div id="workspaceList" class="workspace-list"></div><form id="workspaceForm" class="inline-create"><input id="newWorkspaceName" placeholder="新工作区名称" required><button>创建</button></form></section><section class="member-section"><div class="section-title"><div><b>成员与角色</b><small>管理员可新增成员并分配权限</small></div></div><div id="memberList" class="member-list"></div><form id="memberForm" class="member-form"><div><input id="memberName" placeholder="成员姓名" required><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><input id="memberPassword" type="password" minlength="10" placeholder="初始密码（至少 10 位）" required><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select></div><button>添加成员</button><small>请通过安全方式把初始密码交给成员。</small></form></section></aside><div class="account-mask" id="accountMask" hidden></div>`);
+document.body.insertAdjacentHTML('beforeend', `<aside class="account-panel" id="accountPanel" aria-hidden="true"><header><div><span>组织与权限</span><h2>工作区管理</h2></div><button id="closeAccount" aria-label="关闭">×</button></header><section class="workspace-section"><div class="section-title"><div><b>我的工作区</b><small>切换后只显示该工作区的数据</small></div></div><div id="workspaceList" class="workspace-list"></div><form id="workspaceForm" class="inline-create"><input id="newWorkspaceName" placeholder="新工作区名称" required><button>创建</button></form></section><section class="member-section"><div class="section-title"><div><b>成员与角色</b><small>管理员可新增成员并分配权限</small></div></div><div id="memberList" class="member-list"></div><form id="memberForm" class="member-form"><div><input id="memberName" placeholder="成员姓名" required><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><input id="memberPassword" type="password" minlength="10" placeholder="初始密码（至少 10 位）" required><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select></div><button>添加成员</button><small>请通过安全方式把初始密码交给成员。</small></form></section><section class="audit-section" id="auditSection"><div class="section-title"><div><b>审计时间线</b><small>关键操作按哈希链顺序记录</small></div><em id="auditIntegrity">校验中…</em></div><div id="auditList" class="audit-list"></div></section></aside><div class="account-mask" id="accountMask" hidden></div>`);
 let authMode = 'login';
 let currentSession = null;
 const showAuth = mode => {
@@ -52,10 +52,16 @@ logoutBtn.onclick = async () => { try { await api('/api/logout', { method: 'POST
 const roleLabel = role => ({ owner: '管理员', approver: '审批人', member: '成员' }[role] || role);
 const toggleAccount = open => { accountPanel.classList.toggle('open', open); accountPanel.setAttribute('aria-hidden', String(!open)); accountMask.hidden = !open; };
 async function loadAccountPanel() {
-  const [workspaces, members] = await Promise.all([api('/api/workspaces'), api('/api/members')]);
+  const canAudit = ['owner', 'approver'].includes(currentSession?.role);
+  const [workspaces, members, audit, integrity] = await Promise.all([api('/api/workspaces'), api('/api/members'), canAudit ? api('/api/audit?limit=30') : [], canAudit ? api('/api/audit/verify') : null]);
   workspaceList.innerHTML = workspaces.map(item => `<button data-workspace-id="${item.id}" ${item.current ? 'disabled' : ''}><span><b>${escapeHtml(item.name)}</b><small>${item.current ? '当前工作区' : '点击切换'}</small></span><em>${item.current ? '当前' : '切换'}</em></button>`).join('');
   memberList.innerHTML = members.map(item => `<article><span>${escapeHtml(item.name).slice(0, 1).toUpperCase()}</span><div><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.email)}</small></div><em>${roleLabel(item.role)}</em></article>`).join('');
   memberForm.hidden = currentSession?.role !== 'owner';
+  auditSection.hidden = !canAudit;
+  if (canAudit) {
+    auditIntegrity.textContent = integrity.valid ? `链完整 · ${integrity.checked} 条` : `链异常 · ${integrity.brokenEventId}`; auditIntegrity.className = integrity.valid ? 'valid' : 'invalid';
+    auditList.innerHTML = audit.map(item => `<article><i></i><div><b>${escapeHtml(({ 'workspace.initialized': '初始化工作区', 'user.login': '用户登录', 'user.logout': '用户退出', 'workspace.created': '创建工作区', 'workspace.selected': '切换工作区', 'member.added': '添加成员', 'project.created': '创建项目', 'project.updated': '更新项目', 'contract.created': '创建验收标准', 'contract.updated': '更新验收标准', 'run.created': '创建验收任务', 'run.started': '开始执行', 'run.completed': '完成验收', 'issue.created': '创建返工单', 'issue.status_changed': '更新返工状态', 'issue.retest_created': '创建定向复验', 'issue.exported': '导出返工单', 'release.decision_recorded': '签署发布决定' }[item.action] || item.action))}</b><small>${escapeHtml(item.actor?.name || '系统')} · ${new Date(item.at).toLocaleString('zh-CN')}</small></div><code>#${item.sequence}</code></article>`).join('') || '<div class="contract-empty">尚无审计事件</div>';
+  }
   toggleAccount(true);
 }
 accountBtn.onclick = () => loadAccountPanel().catch(error => toast(error.message)); closeAccount.onclick = () => toggleAccount(false); accountMask.onclick = () => toggleAccount(false);
@@ -63,7 +69,7 @@ workspaceList.onclick = async event => { const button = event.target.closest('[d
 workspaceForm.onsubmit = async event => { event.preventDefault(); try { await api('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: newWorkspaceName.value }) }); location.reload(); } catch (error) { toast(error.message); } };
 memberForm.onsubmit = async event => { event.preventDefault(); try { await api('/api/members', { method: 'POST', body: JSON.stringify({ name: memberName.value, email: memberEmail.value, password: memberPassword.value, role: memberRole.value }) }); memberForm.reset(); await loadAccountPanel(); toast('成员已加入当前工作区'); } catch (error) { toast(error.message); } };
 
-document.body.insertAdjacentHTML('beforeend', `<aside class="run-task-panel" id="runTaskPanel" aria-hidden="true"><header><div><span>真实任务</span><h2>验收执行详情</h2></div><button id="closeRunTask" aria-label="关闭">×</button></header><section class="run-task-state"><div><span id="runTaskId">—</span><strong id="runTaskStatus">等待读取</strong></div><p id="runTaskSummary">从后端读取任务状态和真实执行证据。</p></section><section class="system-evidence" id="systemEvidence"><div class="empty-task">尚未执行检查</div></section><section class="criteria-results"><span class="field-label">验收标准</span><div id="backendCriteria"></div></section><footer><p id="runTaskBoundary">只有配置了浏览器步骤和结果断言的标准才可能自动通过。</p><button id="executeRunBtn">执行验收</button></footer></aside><div class="run-task-mask" id="runTaskMask" hidden></div>`);
+document.body.insertAdjacentHTML('beforeend', `<aside class="run-task-panel" id="runTaskPanel" aria-hidden="true"><header><div><span>真实任务</span><h2>验收执行详情</h2></div><button id="closeRunTask" aria-label="关闭">×</button></header><section class="run-task-state"><div><span id="runTaskId">—</span><strong id="runTaskStatus">等待读取</strong></div><p id="runTaskSummary">从后端读取任务状态和真实执行证据。</p></section><section class="system-evidence" id="systemEvidence"><div class="empty-task">尚未执行检查</div></section><section class="criteria-results"><span class="field-label">验收标准</span><div id="backendCriteria"></div></section><section class="run-decisions" id="runDecisionHistory" hidden></section><footer><p id="runTaskBoundary">只有配置了浏览器步骤和结果断言的标准才可能自动通过。</p><div><button id="recordDecisionBtn" class="decision-action" hidden>记录发布决定</button><button id="executeRunBtn">执行验收</button></div></footer></aside><div class="run-task-mask" id="runTaskMask" hidden></div>`);
 document.body.insertAdjacentHTML('beforeend', `<aside class="contracts-panel" id="contractsPanel" aria-hidden="true"><header><div><span>项目资产</span><h2>验收标准库</h2><p>标准会在任务创建时生成独立快照，后续修改不会改变历史验收。</p></div><button id="closeContracts" aria-label="关闭">×</button></header><section class="contracts-toolbar"><div><b id="activeContractCount">0 条启用</b><small>停用标准不会进入新任务</small></div><button id="newContractBtn">＋ 新增标准</button></section><form class="contract-editor" id="contractEditor" hidden><input type="hidden" id="contractEditId"><div class="contract-form-row"><label><span>标准编号</span><input id="contractCode" placeholder="例如 AUTH-02" required></label><label><span>标准名称</span><input id="contractTitle" placeholder="用户能看懂的结果" required></label></div><label><span>正确结果描述</span><textarea id="contractDescription" rows="3" required></textarea></label><div class="contract-form-row"><label><span>分类</span><select id="contractCategory"><option>业务流程</option><option>权限</option><option>数据</option><option>安全</option><option>性能</option></select></label><label><span>级别</span><select id="contractSeverity"><option value="blocker">阻断发布</option><option value="major">重要</option><option value="minor">一般</option></select></label></div><section class="step-builder"><header><div><b>浏览器执行步骤</b><small>至少包含一个“检查”步骤，才可能自动通过</small></div><button type="button" id="addContractStep">＋ 添加步骤</button></header><div id="contractSteps"></div></section><footer><button type="button" class="contract-cancel" id="cancelContractEdit">取消</button><button type="submit" class="contract-save">保存标准</button></footer></form><section class="contract-list" id="contractList"><div class="contract-empty">正在读取标准…</div></section></aside><div class="contracts-mask" id="contractsMask" hidden></div>`);
 
 const syncWizardContracts = contracts => {
@@ -184,6 +190,7 @@ async function bootstrapBackend() {
       connectUrl.value = saved.url;
       connectBranch.value = saved.branch;
       handoffMode.value = saved.handoffMode;
+      connectGithubRepo.value = saved.githubRepo || '';
       connectText.textContent = '后端已保存';
       connectBtn.classList.add('partial');
       await loadContracts({ seed: true });
@@ -205,7 +212,7 @@ async function bootstrapBackend() {
 
 saveConnection.onclick = async () => {
   try {
-    const project = await api('/api/projects', { method: 'POST', body: JSON.stringify({ id: backendProjectId, name: document.querySelector('.project-head h1').childNodes[0].textContent.trim(), repo: connectRepo.value, url: connectUrl.value, branch: connectBranch.value, handoffMode: handoffMode.value }) });
+    const project = await api('/api/projects', { method: 'POST', body: JSON.stringify({ id: backendProjectId, name: document.querySelector('.project-head h1').childNodes[0].textContent.trim(), repo: connectRepo.value, url: connectUrl.value, branch: connectBranch.value, handoffMode: handoffMode.value, githubRepo: connectGithubRepo.value }) });
     backendProjectId = project.id;
     backendProject = project;
     await loadContracts({ seed: true });
@@ -321,11 +328,16 @@ const resultLabel = value => ({ ready: '已就绪', passed: '已通过', warning
 async function loadRunTask() {
   if (!backendRunId) return toast('还没有后端验收任务');
   const run = await api(`/api/runs/${backendRunId}`);
+  const decisions = await api(`/api/decisions?runId=${backendRunId}`);
   renderLiveDashboard(backendProject, run);
   runTaskId.textContent = run.id.toUpperCase();
   runTaskStatus.textContent = run.status === 'completed' ? (run.execution?.executor === 'shipwitness-browser-v1' ? '真实验收已完成' : '基础检查已完成') : run.status === 'running' ? '正在执行' : '等待执行';
   runTaskSummary.textContent = run.execution?.summary || '任务已保存，尚未运行任何检查。';
   backendCriteria.innerHTML = (run.execution?.criteriaResults || run.criteria.map(item => ({ ...item, result: 'queued', reason: '等待执行器' }))).map(item => `<article><i class="${item.result}"></i><div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.reason || item.description)}</p>${item.steps?.length ? `<small>${item.steps.filter(step => step.status === 'passed').length}/${item.steps.length} 步完成</small>` : ''}${item.screenshotUrl ? `<a href="${item.screenshotUrl}" target="_blank">查看截图证据 ↗</a>` : ''}</div><em>${resultLabel(item.result)}</em></article>`).join('');
+  runDecisionHistory.hidden = !decisions.length;
+  runDecisionHistory.innerHTML = decisions.map(item => `<article><span>${item.verdict === 'approve' ? '批准发布' : '暂不发布'}</span><b>${escapeHtml(item.owner)}</b><p>${escapeHtml(item.note || '无补充说明')} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</p></article>`).join('');
+  const canDecide = ['owner', 'approver'].includes(currentSession?.role) && run.status === 'completed';
+  recordDecisionBtn.hidden = !canDecide; recordDecisionBtn.dataset.verdict = run.execution?.verdict === 'passed' ? 'approve' : 'hold'; recordDecisionBtn.textContent = run.execution?.verdict === 'passed' ? '批准本次发布' : '记录暂不发布';
   if (run.execution) {
     if (run.execution.executor === 'shipwitness-browser-v1') {
       const passed = run.execution.criteriaResults.filter(item => item.result === 'passed').length;
@@ -353,6 +365,11 @@ executeRunBtn.onclick = async () => {
   catch (error) { toast(error.message); }
   finally { executeRunBtn.disabled = false; }
 };
+recordDecisionBtn.onclick = async () => {
+  const verdict = recordDecisionBtn.dataset.verdict; recordDecisionBtn.disabled = true;
+  try { await api('/api/decisions', { method: 'POST', body: JSON.stringify({ runId: backendRunId, verdict, note: verdict === 'approve' ? '所有验收标准均有通过证据。' : '当前证据裁决尚未达到发布门槛。' }) }); await loadRunTask(); toast(verdict === 'approve' ? '发布批准已写入审计链' : '暂不发布决定已写入审计链'); }
+  catch (error) { toast(error.message); } finally { recordDecisionBtn.disabled = false; }
+};
 
 const issueStatusLabel = status => ({ open: '待交回', handed_off: '等待修复', fixed: '等待复验', retesting: '复验中', verified: '复验通过', closed: '已关闭' }[status] || '待创建');
 const describeStep = step => {
@@ -371,13 +388,17 @@ const fillIssueDialog = (criterion, result, issue = null) => {
   issuePrompt.textContent = `修复“${criterion.title}”。保持验收标准不变；完成后说明修改位置，并确保以下浏览器路径可以复验：${steps.join('；') || criterion.description}`;
   issueSeverity.textContent = criterion.severity === 'blocker' ? '阻断发布' : criterion.severity === 'major' ? '重要' : '一般';
   issueEvidence.textContent = result.screenshotUrl ? '截图 + 步骤 + 网络记录' : '步骤 + 执行记录';
+  issueHandoffMode.textContent = backendProject?.handoffMode === 'github' ? 'GitHub Issue' : backendProject?.handoffMode === 'agent' ? '编码 Agent 交接包' : '本地返工单';
   issueState.textContent = issueStatusLabel(issue?.status);
   issueState.classList.toggle('sent', Boolean(issue));
   handoffIssue.hidden = ['fixed', 'retesting', 'verified', 'closed'].includes(issue?.status);
   handoffIssue.disabled = false;
   handoffIssue.textContent = !issue ? '创建返工单' : issue.status === 'open' ? '标记为已交回' : '已交回，等待修复';
   retestIssue.hidden = !issue || !['handed_off', 'fixed'].includes(issue.status);
-  issueHint.textContent = issue ? `状态变化已记录 · ${issue.id}` : '创建后会进入项目验收卷宗。';
+  downloadHandoff.hidden = !issue;
+  exportGithub.hidden = !issue || backendProject?.handoffMode !== 'github' || Boolean(issue.externalRef);
+  exportGithub.textContent = issue?.externalRef ? '已创建 GitHub Issue' : '创建 GitHub Issue';
+  issueHint.textContent = issue?.externalRef ? `已交接：${issue.externalRef.url}` : issue ? `状态变化已记录 · ${issue.id}` : '创建后会进入项目验收卷宗。';
 };
 
 window.shipwitnessOpenIssue = async () => {
@@ -423,6 +444,20 @@ retestIssue.onclick = async () => {
     toast('定向复验任务已创建，只执行当前失败路径');
   } catch (error) { toast(error.message); }
   finally { retestIssue.disabled = false; }
+};
+
+downloadHandoff.onclick = async () => {
+  if (!selectedBackendIssue) return;
+  try {
+    const data = await api(`/api/issues/${selectedBackendIssue.id}/handoff`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a');
+    link.href = url; link.download = `ShipWitness-handoff-${selectedBackendIssue.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 500); toast('编码 Agent 交接包已生成');
+  } catch (error) { toast(error.message); }
+};
+exportGithub.onclick = async () => {
+  if (!selectedBackendIssue) return; exportGithub.disabled = true;
+  try { selectedBackendIssue = await api(`/api/issues/${selectedBackendIssue.id}/export/github`, { method: 'POST' }); fillIssueDialog(dashboardRun.criteria[dashboardCriterionIndex], criterionResult(dashboardRun, dashboardCriterionIndex), selectedBackendIssue); toast('GitHub Issue 已创建并写入审计链'); }
+  catch (error) { toast(error.message); } finally { exportGithub.disabled = false; }
 };
 
 signDecision.onclick = async () => {

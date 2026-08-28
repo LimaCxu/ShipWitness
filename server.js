@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { JsonStore, createId } from './lib/store.js';
 import { PostgresStore } from './lib/postgres-store.js';
+import { appendAudit, verifyAuditChain } from './lib/audit.js';
+import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 
@@ -15,7 +17,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.2';
+const serviceVersion = '0.4.0-dev.3';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -107,7 +109,7 @@ async function executeRun(project, run) {
   };
 }
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
@@ -143,6 +145,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: workspace.id, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now };
           data.workspaces.push(workspace); data.users.push(user); data.memberships.push(membership); data.sessions.push(session);
           for (const collection of ['projects', 'contracts', 'runs', 'issues', 'decisions']) for (const item of data[collection]) item.workspaceId ||= workspace.id;
+          appendAudit(data, { workspaceId: workspace.id, actorUserId: user.id, action: 'workspace.initialized', entityType: 'workspace', entityId: workspace.id, details: { migratedCollections: ['projects', 'contracts', 'runs', 'issues', 'decisions'] }, at: now });
           return { user, workspace, membership, token };
         });
         return json(res, 201, { user: publicUser(created.user), workspace: created.workspace, role: created.membership.role }, { 'set-cookie': sessionCookie(created.token, { secure: secureCookie }) });
@@ -157,7 +160,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const membership = data.memberships.find(item => item.userId === user.id);
         if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
         const token = createSessionToken(); const now = new Date().toISOString();
-        await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now }); });
+        await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now }); appendAudit(current, { workspaceId: membership.workspaceId, actorUserId: user.id, action: 'user.login', entityType: 'user', entityId: user.id, at: now }); });
         const workspace = data.workspaces.find(item => item.id === membership.workspaceId);
         return json(res, 200, { user: publicUser(user), workspace, role: membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
       }
@@ -172,7 +175,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (url.pathname.startsWith('/api/') && !session) return json(res, 401, { error: '请先登录' });
       if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, { user: publicUser(currentUser), workspace: currentWorkspace, role: membership?.role });
       if (req.method === 'POST' && url.pathname === '/api/logout') {
-        await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== tokenHash); });
+        await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== tokenHash); appendAudit(data, { workspaceId: session.workspaceId, actorUserId: currentUser.id, action: 'user.logout', entityType: 'user', entityId: currentUser.id }); });
         return json(res, 200, { ok: true }, { 'set-cookie': clearSessionCookie(secureCookie) });
       }
 
@@ -190,6 +193,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const value = { id: createId('ws'), name: required(input.name, '工作区名称'), createdAt: now };
           data.workspaces.push(value); data.memberships.push({ id: createId('mem'), workspaceId: value.id, userId: currentUser.id, role: 'owner', createdAt: now });
           const active = data.sessions.find(item => item.tokenHash === tokenHash); active.workspaceId = value.id;
+          appendAudit(data, { workspaceId: value.id, actorUserId: currentUser.id, action: 'workspace.created', entityType: 'workspace', entityId: value.id, at: now });
           return value;
         });
         return json(res, 201, workspace);
@@ -197,7 +201,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments[3] === 'select') {
         const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2]);
         if (!targetMembership) return json(res, 404, { error: '工作区不存在' });
-        await store.update(data => { data.sessions.find(item => item.tokenHash === tokenHash).workspaceId = targetMembership.workspaceId; });
+        await store.update(data => { data.sessions.find(item => item.tokenHash === tokenHash).workspaceId = targetMembership.workspaceId; appendAudit(data, { workspaceId: targetMembership.workspaceId, actorUserId: currentUser.id, action: 'workspace.selected', entityType: 'workspace', entityId: targetMembership.workspaceId }); });
         return json(res, 200, { workspace: authData.workspaces.find(item => item.id === targetMembership.workspaceId), role: targetMembership.role });
       }
       if (req.method === 'GET' && url.pathname === '/api/members') {
@@ -213,9 +217,19 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           let user = data.users.find(item => item.email === email); const now = new Date().toISOString();
           if (!user) { user = { id: createId('usr'), email, name: required(input.name, '姓名'), passwordHash, createdAt: now }; data.users.push(user); }
           if (data.memberships.some(item => item.workspaceId === workspaceId && item.userId === user.id)) throw Object.assign(new Error('该用户已经是工作区成员'), { status: 409 });
-          const item = { id: createId('mem'), workspaceId, userId: user.id, role, createdAt: now }; data.memberships.push(item); return { ...publicUser(user), role, membershipId: item.id };
+          const item = { id: createId('mem'), workspaceId, userId: user.id, role, createdAt: now }; data.memberships.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.added', entityType: 'membership', entityId: item.id, details: { userId: user.id, role }, at: now }); return { ...publicUser(user), role, membershipId: item.id };
         });
         return json(res, 201, member);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/audit') {
+        requireRole(['owner', 'approver']);
+        const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 100), 1), 200);
+        const events = authData.auditEvents.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.sequence - a.sequence).slice(0, limit).map(item => ({ ...item, actor: item.actorUserId ? publicUser(authData.users.find(user => user.id === item.actorUserId) || { id: item.actorUserId, name: '未知用户', email: '' }) : null }));
+        return json(res, 200, events);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/audit/verify') {
+        requireRole(['owner', 'approver']);
+        return json(res, 200, verifyAuditChain(authData.auditEvents.filter(item => item.workspaceId === workspaceId)));
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
@@ -223,8 +237,9 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = await store.update(data => {
           const now = new Date().toISOString();
           const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
-          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: required(input.repo, '项目目录'), url: required(input.url, '测试网址'), branch: required(input.branch || 'main', '代码分支'), handoffMode: input.handoffMode || 'file', updatedAt: now, createdAt: existing?.createdAt || now };
+          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: required(input.repo, '项目目录'), url: required(input.url, '测试网址'), branch: required(input.branch || 'main', '代码分支'), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: existing ? 'project.updated' : 'project.created', entityType: 'project', entityId: value.id, details: { branch: value.branch, handoffMode: value.handoffMode }, at: now });
           return value;
         });
         return json(res, 201, project);
@@ -252,7 +267,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (data.contracts.some(item => item.projectId === input.projectId && item.code === code)) throw Object.assign(new Error('标准编号已存在'), { status: 409 });
           const now = new Date().toISOString();
           const value = { id: createId('ctr'), workspaceId, projectId: input.projectId, code, title: required(input.title, '标准名称'), description: required(input.description, '标准描述'), category: input.category || '业务流程', severity: input.severity || 'blocker', steps: normalizeSteps(input.steps), enabled: input.enabled !== false, version: 1, createdAt: now, updatedAt: now };
-          data.contracts.unshift(value);
+          data.contracts.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'contract.created', entityType: 'contract', entityId: value.id, details: { code: value.code, version: value.version }, at: now });
           return value;
         });
         return json(res, 201, contract);
@@ -271,6 +286,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if ('enabled' in input) current.enabled = Boolean(input.enabled);
           current.version += 1;
           current.updatedAt = new Date().toISOString();
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'contract.updated', entityType: 'contract', entityId: current.id, details: { code: current.code, version: current.version, enabled: current.enabled }, at: current.updatedAt });
           return current;
         });
         return json(res, 200, contract);
@@ -289,7 +305,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
           const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', createdAt: new Date().toISOString() };
-          data.runs.unshift(value); return value;
+          data.runs.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.created', entityType: 'run', entityId: value.id, details: { criteriaCount: criteria.length }, at: value.createdAt }); return value;
         });
         return json(res, 201, run);
       }
@@ -300,7 +316,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         if (run.status === 'running') return json(res, 409, { error: '任务正在执行' });
         const project = snapshot.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
         if (!project) return json(res, 409, { error: '任务关联的项目不存在' });
-        await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'running'; current.startedAt = new Date().toISOString(); });
+        await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'running'; current.startedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.started', entityType: 'run', entityId: current.id, at: current.startedAt }); });
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
           const execution = hasBrowserSteps ? await executeBrowserRun({ project, run, artifactsDir }) : await executeRun(project, run);
@@ -315,11 +331,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
               issue.timeline ||= [];
               issue.timeline.push({ status: issue.status, at: current.completedAt, note: execution.verdict === 'passed' ? '定向复验通过' : `定向复验未通过：${execution.summary}` });
             }
+            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.completed', entityType: 'run', entityId: current.id, details: { verdict: execution.verdict, executor: execution.executor }, at: current.completedAt });
             return current;
           });
           return json(res, 200, completed);
         } catch (error) {
-          await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '基础执行器发生内部错误'; });
+          await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '执行器发生内部错误'; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.failed', entityType: 'run', entityId: current.id, details: { failure: current.failure } }); });
           throw error;
         }
       }
@@ -347,7 +364,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
             severity: criterion?.severity || input.severity || 'blocker', status: 'open', createdAt: now, updatedAt: now,
             timeline: [{ status: 'open', at: now, note: '从验收证据创建' }]
           };
-          data.issues.unshift(value); return value;
+          data.issues.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'issue.created', entityType: 'issue', entityId: value.id, details: { runId: value.runId, criterionId: value.criterionId, severity: value.severity }, at: now }); return value;
         });
         return json(res, 201, issue);
       }
@@ -356,6 +373,33 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const runId = url.searchParams.get('runId');
         const issues = data.issues.filter(item => item.workspaceId === workspaceId && (!runId || item.runId === runId || item.retestRunId === runId));
         return json(res, 200, issues);
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments[3] === 'handoff') {
+        const issue = authData.issues.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        if (!issue) return json(res, 404, { error: '返工单不存在' });
+        const run = authData.runs.find(item => item.id === issue.runId && item.workspaceId === workspaceId);
+        const project = run && authData.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
+        if (!run || !project) return json(res, 409, { error: '返工单关联数据不完整' });
+        return json(res, 200, buildHandoffPackage({ issue, run, project }));
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments[3] === 'export' && segments[4] === 'github') {
+        requireRole(['owner', 'member']);
+        const issue = authData.issues.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        if (!issue) return json(res, 404, { error: '返工单不存在' });
+        if (issue.externalRef) return json(res, 409, { error: '返工单已经导出到外部系统' });
+        const run = authData.runs.find(item => item.id === issue.runId && item.workspaceId === workspaceId);
+        const project = run && authData.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
+        if (!run || !project) return json(res, 409, { error: '返工单关联数据不完整' });
+        const handoff = buildHandoffPackage({ issue, run, project });
+        const externalRef = await githubIssueCreator({ repo: project.githubRepo, token: process.env.GITHUB_TOKEN, title: `[ShipWitness] ${issue.title}`, body: handoff.prompt, labels: ['shipwitness', issue.severity || 'acceptance-failure'] });
+        const saved = await store.update(data => {
+          const current = data.issues.find(item => item.id === issue.id && item.workspaceId === workspaceId);
+          current.externalRef = externalRef; current.updatedAt = new Date().toISOString();
+          current.timeline ||= []; current.timeline.push({ status: current.status, at: current.updatedAt, note: `已导出到 ${externalRef.provider}: ${externalRef.url}` });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'issue.exported', entityType: 'issue', entityId: current.id, details: { provider: externalRef.provider, externalId: externalRef.id, repo: externalRef.repo }, at: current.updatedAt });
+          return current;
+        });
+        return json(res, 201, saved);
       }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments.length === 3) {
         const input = await body(req);
@@ -369,6 +413,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
             current.updatedAt = new Date().toISOString();
             current.timeline ||= [];
             current.timeline.push({ status: input.status, at: current.updatedAt, note: String(input.note || '').slice(0, 500) });
+            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'issue.status_changed', entityType: 'issue', entityId: current.id, details: { from: current.timeline.at(-2)?.status || null, to: input.status, note: String(input.note || '').slice(0, 500) }, at: current.updatedAt });
           }
           return current;
         });
@@ -387,6 +432,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.runs.unshift(run);
           issue.status = 'retesting'; issue.retestRunId = run.id; issue.updatedAt = now;
           issue.timeline ||= []; issue.timeline.push({ status: 'retesting', at: now, note: `已创建复验任务 ${run.id}` });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'issue.retest_created', entityType: 'issue', entityId: issue.id, details: { runId: run.id, sourceRunId: source.id }, at: now });
           return { issue, run };
         });
         return json(res, 201, retest);
@@ -396,16 +442,28 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const input = await body(req);
         const decision = await store.update(data => {
           const runId = required(input.runId, '验收记录');
-          if (!data.runs.some(item => item.id === runId && item.workspaceId === workspaceId)) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
-          const value = { id: createId('decision'), workspaceId, runId, owner: required(input.owner, '负责人'), verdict: required(input.verdict, '决定'), note: input.note || '', createdAt: new Date().toISOString() }; data.decisions.unshift(value); return value;
+          const run = data.runs.find(item => item.id === runId && item.workspaceId === workspaceId);
+          if (!run) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          if (run.status !== 'completed') throw Object.assign(new Error('任务尚未完成，不能签署发布决定'), { status: 409 });
+          const verdict = required(input.verdict, '决定');
+          if (!['approve', 'hold'].includes(verdict)) throw Object.assign(new Error('发布决定必须是 approve 或 hold'), { status: 400 });
+          if (verdict === 'approve' && run.execution?.verdict !== 'passed') throw Object.assign(new Error('只有证据裁决通过的任务才能批准发布'), { status: 409 });
+          const note = String(input.note || '').trim();
+          if (verdict === 'hold' && !note) throw Object.assign(new Error('暂不发布必须填写原因'), { status: 400 });
+          const value = { id: createId('decision'), workspaceId, runId, owner: currentUser.name, ownerUserId: currentUser.id, verdict, note, createdAt: new Date().toISOString() }; data.decisions.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'release.decision_recorded', entityType: 'decision', entityId: value.id, details: { runId, verdict: value.verdict }, at: value.createdAt }); return value;
         });
         return json(res, 201, decision);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/decisions') {
+        const runId = url.searchParams.get('runId');
+        return json(res, 200, authData.decisions.filter(item => item.workspaceId === workspaceId && (!runId || item.runId === runId)));
       }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'dossiers' && segments[2]) {
         const data = await store.read();
         const run = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
-        return json(res, 200, { schema: 'shipwitness.dossier.v1', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id) });
+        const workspaceAudit = data.auditEvents.filter(item => item.workspaceId === workspaceId);
+        return json(res, 200, { schema: 'shipwitness.dossier.v1', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id), auditProof: verifyAuditChain(workspaceAudit) });
       }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'evidence' && segments[2] && segments[3] && segments.length === 4) {
         if (!authData.runs.some(item => item.id === segments[2] && item.workspaceId === workspaceId)) return json(res, 404, { error: '验收记录不存在' });

@@ -1,6 +1,8 @@
 # Security policy
 
-ShipWitness is under active development. Version `0.4.0-dev.2` includes password authentication, HttpOnly SameSite cookies, login throttling, role checks, workspace isolation, PostgreSQL storage, and verified backup/restore tooling. Do not expose the current development release directly to the public internet until it is placed behind HTTPS and the security review is complete.
+ShipWitness is under active development. Version `0.4.0-dev.3` includes password authentication, HttpOnly SameSite cookies, login throttling, role checks, workspace isolation, PostgreSQL storage, verified backup/restore tooling, and tamper-evident audit chains. Do not expose the current development release directly to the public internet until it is placed behind HTTPS and the security review is complete.
+
+External integration credentials are read only from server environment variables. Project records contain repository identifiers but never access tokens. Use repository-scoped, least-privilege GitHub tokens and rotate them outside ShipWitness.
 
 Passwords are derived with scrypt and per-user salts. Session tokens are stored as SHA-256 hashes and expire after seven days. When TLS terminates at a reverse proxy, forward `X-Forwarded-Proto: https` so ShipWitness marks the session cookie as `Secure`.
 

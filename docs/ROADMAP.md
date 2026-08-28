@@ -18,7 +18,8 @@
 - [x] Evidence-linked issues, handoff state, and focused retest runs
 - [x] Authentication and workspace isolation
 - [x] Owner, approver, and member roles with member management
-- Approval audit timeline and issue integrations
+- [x] Hash-chained audit timeline and evidence-gated approvals
+- [x] Versioned coding-agent handoff package and GitHub Issue adapter
 - [x] PostgreSQL storage, versioned migrations, JSON import, and health checks
 
 ## 1.0 — Self-hosted release gate

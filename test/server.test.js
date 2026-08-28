@@ -20,7 +20,8 @@ const authenticatedRequest = cookie => async (base, path, options = {}) => reque
 
 test('project, preflight, run and dossier API work together', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-'));
-  const server = createApp({ storeFile: join(folder, 'store.json') });
+  let githubInput;
+  const server = createApp({ storeFile: join(folder, 'store.json'), githubIssueCreator: async input => { githubInput = input; return { provider: 'github', id: '42', url: `https://github.com/${input.repo}/issues/42`, repo: input.repo }; } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -32,7 +33,7 @@ test('project, preflight, run and dossier API work together', async t => {
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);
 
-  const created = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '测试项目', repo: folder, url: `${base}/`, branch: 'main', handoffMode: 'file' }) });
+  const created = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '测试项目', repo: folder, url: `${base}/`, branch: 'main', handoffMode: 'github', githubRepo: 'example/shipwitness-test' }) });
   assert.equal(created.status, 201);
   assert.match(created.body.id, /^prj_/);
 
@@ -81,6 +82,19 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.equal(handedOff.status, 200);
   assert.equal(handedOff.body.timeline.length, 2);
 
+  const handoff = await authRequest(base, `/api/issues/${issue.body.id}/handoff`);
+  assert.equal(handoff.status, 200);
+  assert.equal(handoff.body.schema, 'shipwitness.handoff.v1');
+  assert.match(handoff.body.prompt, /不得修改已确认的验收标准/);
+
+  const exported = await authRequest(base, `/api/issues/${issue.body.id}/export/github`, { method: 'POST' });
+  assert.equal(exported.status, 201);
+  assert.equal(exported.body.externalRef.id, '42');
+  assert.equal(githubInput.repo, 'example/shipwitness-test');
+  assert.match(githubInput.body, /实际结果/);
+  const duplicateExport = await authRequest(base, `/api/issues/${issue.body.id}/export/github`, { method: 'POST' });
+  assert.equal(duplicateExport.status, 409);
+
   const listedIssues = await authRequest(base, `/api/issues?runId=${run.body.id}`);
   assert.equal(listedIssues.body.length, 1);
 
@@ -94,13 +108,24 @@ test('project, preflight, run and dossier API work together', async t => {
   const refreshedIssues = await authRequest(base, `/api/issues?runId=${run.body.id}`);
   assert.equal(refreshedIssues.body[0].status, 'handed_off');
 
-  const decision = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, owner: '负责人', verdict: 'hold' }) });
+  const decision = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, verdict: 'hold', note: '证据仍然不足' }) });
   assert.equal(decision.status, 201);
+  assert.equal(decision.body.owner, '测试管理员');
+
+  const approvalRejected = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, verdict: 'approve' }) });
+  assert.equal(approvalRejected.status, 409);
+
+  const audit = await authRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'issue.exported'));
+  assert.ok(audit.body.some(item => item.action === 'release.decision_recorded'));
+  const auditIntegrity = await authRequest(base, '/api/audit/verify');
+  assert.deepEqual(auditIntegrity.body.valid, true);
 
   const dossier = await authRequest(base, `/api/dossiers/${run.body.id}`);
   assert.equal(dossier.status, 200);
   assert.equal(dossier.body.issues.length, 1);
   assert.equal(dossier.body.decisions.length, 1);
+  assert.equal(dossier.body.auditProof.valid, true);
 });
 
 test('invalid payloads return a useful 400 response', async t => {
@@ -181,6 +206,10 @@ test('browser executor performs a real assertion and records screenshot evidence
   assert.equal(execution.body.execution.executor, 'shipwitness-browser-v1');
   assert.equal(execution.body.execution.verdict, 'passed');
   assert.equal(execution.body.execution.criteriaResults[0].steps.length, 2);
+
+  const approval = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, verdict: 'approve', note: '自动化证据完整' }) });
+  assert.equal(approval.status, 201);
+  assert.equal(approval.body.verdict, 'approve');
 
   const screenshot = await fetch(`${base}${execution.body.execution.criteriaResults[0].screenshotUrl}`, { headers: { cookie } });
   assert.equal(screenshot.status, 200);
