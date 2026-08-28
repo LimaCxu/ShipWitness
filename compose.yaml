@@ -16,7 +16,7 @@ services:
 
   shipwitness:
     build: .
-    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.19}
+    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.22}
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,6 +34,7 @@ services:
       SHIPWITNESS_SMTP_USER: ${SHIPWITNESS_SMTP_USER:-}
       SHIPWITNESS_SMTP_PASSWORD: ${SHIPWITNESS_SMTP_PASSWORD:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      SHIPWITNESS_GITHUB_WEBHOOK_SECRET: ${SHIPWITNESS_GITHUB_WEBHOOK_SECRET:-}
     ports:
       - "4173:4173"
     volumes:

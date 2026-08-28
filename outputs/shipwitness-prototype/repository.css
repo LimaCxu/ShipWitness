@@ -21,3 +21,22 @@
 .repository-status article.success em { color: #027a48; background: #ecfdf3; }
 .repository-status article.failure em { color: #b42318; background: #fff1f0; }
 .repository-status > small { display: block; margin-top: 7px; color: #8b94a7; font-size: 8px; }
+.github-integration-section[hidden] { display: none; }
+.github-integration-section .section-title em { padding: 4px 7px; border-radius: 4px; font-size: 8px; font-style: normal; }
+.github-integration-section .section-title em.valid { color: #027a48; background: #ecfdf3; }
+.github-integration-section .section-title em.invalid { color: #8b6113; background: #fff7e8; }
+.github-integration-endpoint { display: grid; gap: 5px; margin: 11px 0; padding: 11px; border: 1px solid #dfe4ee; border-radius: 7px; background: #f8f9fc; }
+.github-integration-endpoint span { color: #7b8498; font-size: 8px; font-weight: 700; }
+.github-integration-endpoint code { overflow: hidden; color: #344054; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.github-integration-endpoint small,.github-integration-endpoint p { margin: 0; color: #7b8498; font-size: 8px; line-height: 1.5; }
+.github-delivery-list { display: grid; gap: 6px; }
+.github-delivery-list > article { display: grid; grid-template-columns: 8px 1fr auto auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid #e2e6ed; border-radius: 6px; background: #fff; }
+.github-delivery-list > article > i { width: 7px; height: 7px; border-radius: 50%; background: #d09a31; }
+.github-delivery-list > article.synced > i { background: #2f9b75; }
+.github-delivery-list > article.failed > i { background: #d2554b; }
+.github-delivery-list > article.ignored > i { background: #98a2b3; }
+.github-delivery-list article div { display: grid; min-width: 0; gap: 3px; }
+.github-delivery-list article b { overflow: hidden; color: #344054; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.github-delivery-list article p,.github-delivery-list > p.empty { margin: 0; color: #8790a2; font-size: 8px; }
+.github-delivery-list article em { color: #667085; font-size: 8px; font-style: normal; }
+.github-delivery-list article button { padding: 4px 7px; border: 1px solid #cfd6e3; border-radius: 4px; color: #3157d5; background: #fff; font-size: 8px; cursor: pointer; }

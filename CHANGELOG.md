@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.22
+
+- Added signed inbound GitHub webhooks for push, check-suite, check-run, and workflow-run events with exact repository and branch matching.
+- Added persistent delivery-ID replay protection, workspace-safe event history, automatic repository refresh, audited failures, and authorized manual retry.
+- Added an owner/approver integration status UI, webhook readiness guidance, retention support, and PostgreSQL migration 010.
+
 ## 0.4.0-dev.21
 
 - Added explicit GitHub branch synchronization for the current commit, verification metadata, commit statuses, and check runs.

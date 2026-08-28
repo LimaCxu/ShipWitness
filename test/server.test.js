@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHmac } from 'node:crypto';
 import { createApp } from '../server.js';
 import { encryptSecret } from '../lib/signing.js';
 import { JsonStore } from '../lib/store.js';
@@ -22,6 +23,10 @@ const setupOwner = async base => {
 };
 
 const authenticatedRequest = cookie => async (base, path, options = {}) => request(base, path, { ...options, headers: { 'content-type': 'application/json', cookie, ...options.headers } });
+const githubWebhookRequest = async (base, secret, { deliveryId, event = 'push', payload, signatureSecret = secret }) => {
+  const raw = JSON.stringify(payload); const signature = `sha256=${createHmac('sha256', signatureSecret).update(raw).digest('hex')}`;
+  return request(base, '/api/integrations/github/webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-github-delivery': deliveryId, 'x-github-event': event, 'x-hub-signature-256': signature }, body: raw });
+};
 
 test('SMTP configuration is disabled by default and rejects partial credentials', () => {
   assert.deepEqual(smtpConfig({}), { enabled: false });
@@ -236,6 +241,44 @@ test('GitHub repository sync is role-gated and binds an immutable commit snapsho
   assert.equal(historicalRun.body.repositorySnapshot.commit.sha, '1'.repeat(40));
   const audit = await ownerRequest(base, '/api/audit');
   assert.equal(audit.body.filter(item => item.action === 'project.repository_synced').length, 2);
+});
+
+test('GitHub webhook verifies signatures, rejects replays, syncs matching branches and supports audited retry', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-github-webhook-')); const webhookSecret = 'github-webhook-test-secret'; let calls = 0; let fail = false;
+  const repositoryReader = async input => {
+    calls += 1; if (fail) throw new Error('GitHub API unavailable'); const sha = String(calls).padStart(40, 'a');
+    return { provider: 'github', repository: input.repository, branch: input.branch, commit: { sha, shortSha: sha.slice(0, 7), url: `https://github.com/acme/product/commit/${sha}`, message: 'Webhook sync', author: 'Ada', committedAt: '2026-08-28T00:00:00Z', verified: true }, checks: { state: 'success', total: 1, passed: 1, failed: 0, pending: 0, detailsUrl: `https://github.com/acme/product/commit/${sha}/checks` }, syncedAt: new Date().toISOString() };
+  };
+  const server = createApp({ storeFile: join(folder, 'store.json'), githubWebhookSecret: webhookSecret, githubRepositoryReader: repositoryReader });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const ownerRequest = authenticatedRequest(cookie);
+  const project = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: 'Webhook 项目', repo: folder, url: base, branch: 'main', githubRepo: 'acme/product' }) });
+  const payload = { ref: 'refs/heads/main', repository: { full_name: 'acme/product' }, after: 'b'.repeat(40) };
+
+  const invalid = await githubWebhookRequest(base, webhookSecret, { deliveryId: 'delivery-invalid', payload, signatureSecret: 'wrong-secret' });
+  assert.equal(invalid.status, 401); assert.equal(calls, 0);
+  const accepted = await githubWebhookRequest(base, webhookSecret, { deliveryId: 'delivery-1', payload });
+  assert.equal(accepted.status, 200); assert.equal(accepted.body.status, 'synced'); assert.equal(calls, 1);
+  const duplicate = await githubWebhookRequest(base, webhookSecret, { deliveryId: 'delivery-1', payload });
+  assert.equal(duplicate.status, 200); assert.equal(duplicate.body.duplicate, true); assert.equal(calls, 1);
+  const ignored = await githubWebhookRequest(base, webhookSecret, { deliveryId: 'delivery-2', payload: { ...payload, ref: 'refs/heads/other' } });
+  assert.equal(ignored.status, 202); assert.equal(ignored.body.status, 'ignored'); assert.equal(calls, 1);
+
+  fail = true;
+  const failed = await githubWebhookRequest(base, webhookSecret, { deliveryId: 'delivery-3', event: 'workflow_run', payload: { action: 'completed', repository: { full_name: 'acme/product' }, workflow_run: { head_branch: 'main' } } });
+  assert.equal(failed.status, 202); assert.equal(failed.body.status, 'failed');
+  const integration = await ownerRequest(base, '/api/integrations/github');
+  assert.equal(integration.status, 200); assert.equal(integration.body.configured, true); assert.equal(integration.body.deliveries.length, 3);
+  const failedDelivery = integration.body.deliveries.find(item => item.deliveryId === 'delivery-3');
+  fail = false;
+  const retried = await ownerRequest(base, `/api/github-deliveries/${failedDelivery.id}/retry`, { method: 'POST' });
+  assert.equal(retried.status, 200); assert.equal(retried.body.status, 'synced'); assert.equal(retried.body.attempts, 2);
+  const repository = await ownerRequest(base, `/api/projects/${project.body.id}/repository`);
+  assert.equal(repository.body.status.commit.message, 'Webhook sync');
+  const audit = await ownerRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'github.delivery_synced'));
+  assert.ok(audit.body.some(item => item.action === 'github.delivery_failed'));
+  assert.ok(audit.body.some(item => item.action === 'github.delivery_retried'));
 });
 
 test('project archive is reversible, preserves history and protects active work', async t => {
@@ -674,17 +717,18 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   await store.update(data => {
     data.sessions.push({ id: 'ses_expired_cleanup', workspaceId: originalWorkspaceId, userId: 'usr_old', expiresAt: old, createdAt: old });
     data.webhookDeliveries.push({ id: 'delivery_cleanup', workspaceId: originalWorkspaceId, status: 'delivered', deliveredAt: old, createdAt: old });
+    data.githubDeliveries.push({ id: 'github_delivery_cleanup', deliveryId: 'old-delivery', workspaceIds: [originalWorkspaceId], status: 'synced', receivedAt: old, updatedAt: old });
     data.alerts.push({ id: 'alert_cleanup', workspaceId: originalWorkspaceId, sourceKey: 'historical.test', status: 'resolved', resolvedAt: old, createdAt: old });
   });
   const preview = await authRequest(base, '/api/retention/preview');
-  assert.equal(preview.body.total, 3);
-  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, emailDeliveries: 0, alerts: 1, invitations: 0 });
+  assert.equal(preview.body.total, 4);
+  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, emailDeliveries: 0, githubDeliveries: 1, alerts: 1, invitations: 0 });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: 'wrong' }) })).status, 409);
   await store.update(data => { data.sessions.find(item => item.id === 'ses_expired_cleanup').id = 'ses_expired_replaced'; });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: preview.body.token }) })).status, 409);
   const refreshedPreview = await authRequest(base, '/api/retention/preview');
   const cleaned = await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: refreshedPreview.body.asOf, token: refreshedPreview.body.token }) });
-  assert.equal(cleaned.body.total, 3);
+  assert.equal(cleaned.body.total, 4);
   assert.equal((await authRequest(base, '/api/retention/preview')).body.total, 0);
 
   const auditExport = await authRequest(base, '/api/audit-exports', { method: 'POST' });

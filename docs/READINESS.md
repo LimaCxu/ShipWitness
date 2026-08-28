@@ -19,6 +19,7 @@
 | 最近验证备份 | 警告 | `SHIPWITNESS_LAST_VERIFIED_BACKUP_AT` 记录在过去 24 小时内，且该时间只应在备份校验成功后写入 |
 | 独立安全评审 | 警告 | `SHIPWITNESS_SECURITY_REVIEW_REFERENCE` 指向真实评审工单或报告编号 |
 | 邮件通知 | 警告 | SMTP 已启用且没有最终失败邮件 |
+| GitHub 自动同步 | 警告 | 使用 GitHub 项目时已配置签名 Webhook；未使用 GitHub 时不要求 |
 | 运行健康 | 警告 | 没有超时任务或最终失败 Webhook |
 | 目标白名单 | 通过项 | 非本机目标默认拒绝，并显示显式允许的来源数量 |
 

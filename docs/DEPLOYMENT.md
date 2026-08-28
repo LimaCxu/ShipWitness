@@ -18,6 +18,8 @@ SHIPWITNESS_ALLOWED_TARGET_ORIGINS='https://staging.example.com,https://assets.e
 
 The list uses exact origins, including scheme and non-default port. Do not add broad internal gateways or metadata endpoints. Loopback URLs are enabled automatically for local evaluation.
 
+For GitHub automatic synchronization, generate a separate random Webhook secret, store it in the deployment secret manager as `SHIPWITNESS_GITHUB_WEBHOOK_SECRET`, and configure the same value in GitHub. The inbound URL must be the public HTTPS origin plus `/api/integrations/github/webhook`. Do not reuse `SHIPWITNESS_MASTER_KEY` or a GitHub access token as the Webhook secret. Keep the endpoint behind ordinary request-size limits, but do not place interactive-login middleware in front of it; ShipWitness authenticates the raw payload using GitHub's SHA-256 signature.
+
 `GET /api/health` returns the active storage engine and database readiness. The application container waits for PostgreSQL health before starting, and pending numbered SQL migrations run automatically under an advisory lock.
 
 The master key is not stored in PostgreSQL backups. Back it up separately and restrict access to the application process. Test restoration with the same key by verifying one existing signed dossier and delivering a test webhook.

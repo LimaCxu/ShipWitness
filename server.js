@@ -10,6 +10,7 @@ import { PostgresStore } from './lib/postgres-store.js';
 import { appendAudit, verifyAuditChain } from './lib/audit.js';
 import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
 import { normalizeGitHubRepository, readGitHubRepository } from './lib/github-repository.js';
+import { githubWebhookTarget, verifyGitHubWebhook } from './lib/github-webhook.js';
 import { evaluateReleaseGate } from './lib/release-gate.js';
 import { createSigningKey, decryptSecret, encryptSecret, keyFromSecret, signPayload, verifySignedPayload } from './lib/signing.js';
 import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
@@ -23,7 +24,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.21';
+const serviceVersion = '0.4.0-dev.22';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -40,16 +41,21 @@ const json = (res, status, body, headers = {}) => {
   res.end(JSON.stringify(body));
 };
 
-const body = async req => {
+const rawBody = async (req, maxBytes = 1_000_000) => {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1_000_000) throw Object.assign(new Error('请求内容过大'), { status: 413 });
+    if (size > maxBytes) throw Object.assign(new Error('请求内容过大'), { status: 413 });
     chunks.push(chunk);
   }
-  if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  return Buffer.concat(chunks);
+};
+
+const body = async req => {
+  const raw = await rawBody(req);
+  if (!raw.length) return {};
+  try { return JSON.parse(raw.toString('utf8')); }
   catch { throw Object.assign(new Error('JSON 格式无效'), { status: 400 }); }
 };
 
@@ -126,6 +132,10 @@ const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
 };
 
 const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
+const githubDeliveryForWorkspace = (item, workspaceId, projects) => {
+  const projectIds = new Set(projects.filter(project => project.workspaceId === workspaceId).map(project => project.id)); const { workspaceIds: hidden, ...safe } = item;
+  return { ...safe, projectIds: (item.projectIds || []).filter(id => projectIds.has(id)), results: (item.results || []).filter(result => projectIds.has(result.projectId)) };
+};
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
 const dossierPayload = (data, run, workspaceId) => {
   const auditEvents = data.auditEvents.filter(item => item.workspaceId === workspaceId);
@@ -221,16 +231,17 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   const sessions = data.sessions.filter(item => item.workspaceId === workspaceId && new Date(item.expiresAt) < cutoff);
   const webhookDeliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
   const emailDeliveries = data.emailDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
+  const githubDeliveries = data.githubDeliveries.filter(item => item.workspaceIds?.length === 1 && item.workspaceIds[0] === workspaceId && ['synced', 'failed', 'ignored'].includes(item.status) && new Date(item.updatedAt || item.receivedAt) < cutoff);
   const alerts = data.alerts.filter(item => item.workspaceId === workspaceId && item.status === 'resolved' && new Date(item.resolvedAt || item.createdAt) < cutoff);
   const invitations = data.invitations.filter(item => item.workspaceId === workspaceId && (item.acceptedAt || item.revokedAt || new Date(item.expiresAt) <= asOf) && new Date(item.acceptedAt || item.revokedAt || item.expiresAt) < cutoff);
-  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, emailDeliveries: emailDeliveries.length, alerts: alerts.length, invitations: invitations.length };
-  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), emailDeliveries: emailDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
+  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, emailDeliveries: emailDeliveries.length, githubDeliveries: githubDeliveries.length, alerts: alerts.length, invitations: invitations.length };
+  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), emailDeliveries: emailDeliveries.map(item => item.id).sort(), githubDeliveries: githubDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const token = createHash('sha256').update(JSON.stringify({ workspaceId, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, ids })).digest('hex');
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
@@ -286,6 +297,20 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
     return due.length;
   };
   const emailTimer = setInterval(() => processEmailDeliveries().catch(() => undefined), 10_000); emailTimer.unref();
+  const syncRepositoryProject = async ({ projectId, actorUserId = null, trigger = 'manual' }) => {
+    const snapshot = await store.read(); const project = snapshot.projects.find(item => item.id === projectId && !item.archivedAt);
+    if (!project) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
+    if (!project.githubRepo) throw Object.assign(new Error('请先配置 GitHub 仓库'), { status: 409 });
+    const repositoryStatus = await githubRepositoryReader({ repository: project.githubRepo, branch: project.branch, token: process.env.GITHUB_TOKEN });
+    return store.update(data => {
+      const current = data.projects.find(item => item.id === project.id && !item.archivedAt);
+      if (!current) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
+      if (current.githubRepo !== project.githubRepo || current.branch !== project.branch) throw Object.assign(new Error('仓库配置已变化，请重新同步'), { status: 409 });
+      current.repositoryStatus = repositoryStatus; current.updatedAt = repositoryStatus.syncedAt;
+      appendAudit(data, { workspaceId: current.workspaceId, actorUserId, action: 'project.repository_synced', entityType: 'project', entityId: current.id, details: { trigger, provider: repositoryStatus.provider, repository: repositoryStatus.repository, branch: repositoryStatus.branch, commitSha: repositoryStatus.commit.sha, checksState: repositoryStatus.checks.state }, at: repositoryStatus.syncedAt });
+      return current.repositoryStatus;
+    });
+  };
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -304,6 +329,29 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/setup/status') {
         const data = await store.read();
         return json(res, 200, { needsSetup: !data.users.length });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/integrations/github/webhook') {
+        const raw = await rawBody(req, 2_000_000); verifyGitHubWebhook({ raw, signature: req.headers['x-hub-signature-256'], secret: githubWebhookSecret });
+        const deliveryId = String(req.headers['x-github-delivery'] || ''); const event = String(req.headers['x-github-event'] || '');
+        if (!/^[A-Za-z0-9-]{1,100}$/.test(deliveryId) || !/^[a-z_]{1,50}$/.test(event)) return json(res, 400, { error: 'GitHub Webhook 事件标识无效' });
+        let payload; try { payload = JSON.parse(raw.toString('utf8')); } catch { return json(res, 400, { error: 'GitHub Webhook JSON 无效' }); }
+        const target = githubWebhookTarget(event, payload); const snapshot = await store.read();
+        const repositoryProjects = snapshot.projects.filter(item => !item.archivedAt && item.githubRepo?.toLowerCase() === target.repository.toLowerCase());
+        const projects = target.supported && target.branch ? repositoryProjects.filter(item => item.branch === target.branch) : [];
+        const now = new Date().toISOString(); const claimed = await store.update(data => {
+          const duplicate = data.githubDeliveries.find(item => item.deliveryId === deliveryId); if (duplicate) return { duplicate };
+          const item = { id: createId('ghd'), deliveryId, event, action: String(payload.action || '').slice(0, 100) || null, repository: target.repository || null, branch: target.branch, projectIds: projects.map(item => item.id), workspaceIds: [...new Set(repositoryProjects.map(item => item.workspaceId))], status: projects.length ? 'processing' : 'ignored', attempts: projects.length ? 1 : 0, receivedAt: now, updatedAt: now };
+          data.githubDeliveries.unshift(item); return { item };
+        });
+        if (claimed.duplicate) return json(res, 200, { accepted: true, duplicate: true, status: claimed.duplicate.status });
+        const item = claimed.item; if (!projects.length) return json(res, 202, { accepted: true, status: 'ignored', reason: target.supported ? '没有匹配的仓库与分支' : '事件类型不触发同步' });
+        const results = [];
+        for (const project of projects) {
+          try { const status = await syncRepositoryProject({ projectId: project.id, trigger: `github_webhook:${event}` }); results.push({ projectId: project.id, status: 'synced', commitSha: status.commit.sha, checksState: status.checks.state }); }
+          catch (error) { results.push({ projectId: project.id, status: 'failed', error: String(error.message || '同步失败').slice(0, 300) }); }
+        }
+        const final = await store.update(data => { const current = data.githubDeliveries.find(value => value.id === item.id); current.results = results; current.status = results.some(value => value.status === 'failed') ? 'failed' : 'synced'; current.updatedAt = new Date().toISOString(); for (const workspaceId of current.workspaceIds) appendAudit(data, { workspaceId, action: `github.delivery_${current.status}`, entityType: 'github_delivery', entityId: current.id, details: { deliveryId, event, repository: current.repository, branch: current.branch, projects: current.projectIds.length }, at: current.updatedAt }); return current; });
+        return json(res, final.status === 'synced' ? 200 : 202, { accepted: true, deliveryId, status: final.status, synced: results.filter(value => value.status === 'synced').length, failed: results.filter(value => value.status === 'failed').length });
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         const input = await body(req);
@@ -556,6 +604,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const backupTime = lastVerifiedBackupAt ? new Date(lastVerifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
         const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
         const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
+        const githubProjects = authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt && item.githubRepo).length;
         const checks = [
           { id: 'postgres', category: '基础设施', label: '生产数据库', status: storage.engine === 'postgresql' ? 'pass' : 'block', detail: storage.engine === 'postgresql' ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: storage.engine === 'postgresql' ? null : '配置 DATABASE_URL 并执行迁移' },
           { id: 'https', category: '访问安全', label: 'HTTPS 公网地址', status: publicHttps ? 'pass' : 'block', detail: publicHttps ? '已配置外部 HTTPS 地址，邀请和任务链接可安全生成。' : '未配置有效的 SHIPWITNESS_PUBLIC_URL HTTPS 地址。', action: publicHttps ? null : '在反向代理启用 HTTPS，并配置 SHIPWITNESS_PUBLIC_URL' },
@@ -564,6 +613,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
           { id: 'security_review', category: '访问安全', label: '外部安全评审', status: securityReviewReference ? 'pass' : 'warning', detail: securityReviewReference ? '部署环境已登记外部安全评审参考。' : '尚未登记独立安全评审结果。', action: securityReviewReference ? null : '完成独立安全评审并配置 SHIPWITNESS_SECURITY_REVIEW_REFERENCE' },
           { id: 'email', category: '通知送达', label: '邮件通知', status: emailEnabled && emailFailures === 0 ? 'pass' : 'warning', detail: !emailEnabled ? 'SMTP 未启用，邀请、失败和审批需要成员主动查看。' : emailFailures ? `${emailFailures} 封邮件最终投递失败。` : 'SMTP 已启用且没有最终失败投递。', action: !emailEnabled ? '配置 TLS SMTP 并发送测试邮件' : emailFailures ? '处理失败邮件并重试' : null },
+          { id: 'github_webhook', category: '代码证据', label: 'GitHub 自动同步', status: !githubProjects || githubWebhookSecret ? 'pass' : 'warning', detail: !githubProjects ? '当前没有项目启用 GitHub 集成。' : githubWebhookSecret ? `${githubProjects} 个 GitHub 项目已启用签名事件接收。` : `${githubProjects} 个 GitHub 项目仍依赖人工同步。`, action: githubProjects && !githubWebhookSecret ? '配置 SHIPWITNESS_GITHUB_WEBHOOK_SECRET 并在仓库订阅事件' : null },
           { id: 'operations', category: '运行健康', label: '任务与 Webhook', status: staleRuns || webhookFailures ? 'warning' : 'pass', detail: staleRuns || webhookFailures ? `${staleRuns} 个超时任务，${webhookFailures} 个 Webhook 最终失败。` : '没有超时任务或最终失败 Webhook。', action: staleRuns || webhookFailures ? '在告警中心确认并处理异常' : null },
           { id: 'target_policy', category: '执行边界', label: '验收目标白名单', status: 'pass', detail: `${allowedTargetOrigins.length} 个外部来源已明确允许；其他非本机来源默认拒绝。`, action: null }
         ];
@@ -662,8 +712,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const preview = retentionPreview(data, workspaceId, asOf);
           if (input.token !== preview.token) throw Object.assign(new Error('数据已经变化，请重新预览后再清理'), { status: 409 });
           if (!preview.total) throw Object.assign(new Error('没有符合条件的运营数据'), { status: 409 });
-          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const emailDeliveryIds = new Set(preview.ids.emailDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
-          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.emailDeliveries = data.emailDeliveries.filter(item => !emailDeliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
+          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const emailDeliveryIds = new Set(preview.ids.emailDeliveries); const githubDeliveryIds = new Set(preview.ids.githubDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
+          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.emailDeliveries = data.emailDeliveries.filter(item => !emailDeliveryIds.has(item.id)); data.githubDeliveries = data.githubDeliveries.filter(item => !githubDeliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
           const now = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.cleaned', entityType: 'workspace', entityId: workspaceId, details: { cutoff: preview.cutoff, counts: preview.counts, total: preview.total }, at: now });
           return { cleanedAt: now, cutoff: preview.cutoff, counts: preview.counts, total: preview.total };
         });
@@ -697,6 +747,24 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return item;
         });
         return json(res, 200, { id: revoked.id, revokedAt: revoked.revokedAt });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/integrations/github') {
+        requireRole(['owner', 'approver']);
+        const deliveries = authData.githubDeliveries.filter(item => item.workspaceIds?.includes(workspaceId)).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, 50).map(item => githubDeliveryForWorkspace(item, workspaceId, authData.projects));
+        return json(res, 200, { configured: Boolean(githubWebhookSecret), endpoint: `${publicUrl || ''}/api/integrations/github/webhook`, supportedEvents: ['push', 'check_suite', 'check_run', 'workflow_run'], deliveries });
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'github-deliveries' && segments[2] && segments[3] === 'retry') {
+        requireRole(['owner', 'approver']);
+        const delivery = authData.githubDeliveries.find(item => item.id === segments[2] && item.workspaceIds?.includes(workspaceId));
+        if (!delivery) return json(res, 404, { error: 'GitHub 事件不存在' });
+        if (delivery.status !== 'failed') return json(res, 409, { error: '只有同步失败的 GitHub 事件可以重试' });
+        const projectIds = delivery.projectIds.filter(id => authData.projects.some(project => project.id === id && project.workspaceId === workspaceId)); const results = [];
+        for (const projectId of projectIds) {
+          try { const status = await syncRepositoryProject({ projectId, actorUserId: currentUser.id, trigger: `github_retry:${delivery.event}` }); results.push({ projectId, status: 'synced', commitSha: status.commit.sha, checksState: status.checks.state }); }
+          catch (error) { results.push({ projectId, status: 'failed', error: String(error.message || '同步失败').slice(0, 300) }); }
+        }
+        const updated = await store.update(data => { const current = data.githubDeliveries.find(item => item.id === delivery.id); const retriedIds = new Set(projectIds); current.results = [...(current.results || []).filter(item => !retriedIds.has(item.projectId)), ...results]; current.attempts = Number(current.attempts || 0) + 1; current.status = current.results.some(item => item.status === 'failed') ? 'failed' : 'synced'; current.updatedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'github.delivery_retried', entityType: 'github_delivery', entityId: current.id, details: { deliveryId: current.deliveryId, projects: projectIds.length, status: current.status }, at: current.updatedAt }); return current; });
+        return json(res, updated.status === 'synced' ? 200 : 202, githubDeliveryForWorkspace(updated, workspaceId, authData.projects));
       }
       if (req.method === 'GET' && url.pathname === '/api/webhooks') {
         requireRole(['owner']);
@@ -862,15 +930,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = authData.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt);
         if (!project) return json(res, 404, { error: '项目不存在或已归档' });
         if (!project.githubRepo) return json(res, 409, { error: '请先配置 GitHub 仓库' });
-        const repositoryStatus = await githubRepositoryReader({ repository: project.githubRepo, branch: project.branch, token: process.env.GITHUB_TOKEN });
-        const saved = await store.update(data => {
-          const current = data.projects.find(item => item.id === project.id && item.workspaceId === workspaceId && !item.archivedAt);
-          if (!current) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
-          if (current.githubRepo !== project.githubRepo || current.branch !== project.branch) throw Object.assign(new Error('仓库配置已变化，请重新同步'), { status: 409 });
-          current.repositoryStatus = repositoryStatus; current.updatedAt = repositoryStatus.syncedAt;
-          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'project.repository_synced', entityType: 'project', entityId: current.id, details: { provider: repositoryStatus.provider, repository: repositoryStatus.repository, branch: repositoryStatus.branch, commitSha: repositoryStatus.commit.sha, checksState: repositoryStatus.checks.state }, at: repositoryStatus.syncedAt });
-          return current.repositoryStatus;
-        });
+        const saved = await syncRepositoryProject({ projectId: project.id, actorUserId: currentUser.id, trigger: 'manual' });
         return json(res, 200, saved);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[3] === 'preflight') {
