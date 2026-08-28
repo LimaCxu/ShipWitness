@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.50
+
+- Runtime health, startup output, support policy, backups, and release metadata now derive the service version from `package.json` instead of a separately maintained constant.
+- Compose defaults advance with the package version, eliminating a delivery mismatch detected during local startup acceptance.
+
 ## 0.4.0-dev.49
 
 - Release builds now bind their manifest to the complete current Git commit automatically while preserving the explicit CI override.
