@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.49
+
+- Release builds now bind their manifest to the complete current Git commit automatically while preserving the explicit CI override.
+- Release verification rejects bundles without a valid immutable commit identity, preventing otherwise valid but untraceable artifacts from entering delivery.
+
 ## 0.4.0-dev.48
 
 - Added proactive critical alerts for expired acceptance credentials and warning alerts for credentials expiring within 14 days.

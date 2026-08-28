@@ -11,10 +11,18 @@ test('release manifest verifies every payload file and detects tampering', async
   await writeFile(join(folder, 'server.js'), 'console.log("release")\n');
   await writeFile(join(folder, 'docs', 'README.md'), '# Release\n');
   const files = await collectReleaseFiles(folder);
-  await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', files }));
+  await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', commit: 'a'.repeat(40), files }));
   const result = await verifyReleaseDirectory(folder);
   assert.equal(result.valid, true);
   assert.equal(result.filesVerified, 2);
   await writeFile(join(folder, 'server.js'), 'changed\n');
   await assert.rejects(verifyReleaseDirectory(folder), /校验失败/);
+});
+
+test('release manifest requires an immutable Git commit', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-release-'));
+  await writeFile(join(folder, 'server.js'), 'console.log("release")\n');
+  const files = await collectReleaseFiles(folder);
+  await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', files }));
+  await assert.rejects(verifyReleaseDirectory(folder), /缺少有效的 Git 提交号/);
 });
