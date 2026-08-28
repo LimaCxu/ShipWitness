@@ -10,7 +10,7 @@
 
 - [x] Deterministic browser action plans
 - [x] Screenshot, network, and timing evidence
-- [ ] Retry and interruption recovery
+- [x] Retry and interruption recovery
 - [x] Evidence-only verdict engine; no unsupported automatic pass
 
 ## 0.4 — Team workflow

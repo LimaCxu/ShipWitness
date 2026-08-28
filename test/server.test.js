@@ -35,6 +35,10 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.equal(health.body.ok, true);
   assert.equal(health.headers.get('x-frame-options'), 'DENY');
   assert.match(health.headers.get('permissions-policy'), /camera=\(\)/);
+  const frontendScript = await fetch(`${base}/api.js`);
+  assert.equal(frontendScript.status, 200);
+  assert.equal(frontendScript.headers.get('cache-control'), 'no-cache');
+  assert.match(await frontendScript.text(), /创建新任务并重试/);
 
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);
@@ -172,7 +176,47 @@ test('run execution is claimed atomically and rejects a concurrent duplicate', a
   const second = await authRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' });
   assert.equal(second.status, 409);
   releaseExecution();
-  assert.equal((await first).status, 200);
+  const firstCompleted = await first;
+  assert.equal(firstCompleted.status, 200);
+  assert.equal(firstCompleted.body.attemptNumber, 1);
+  assert.equal((await authRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' })).status, 409);
+  const retry = await authRequest(base, `/api/runs/${run.body.id}/retry`, { method: 'POST' });
+  assert.equal(retry.status, 201);
+  assert.notEqual(retry.body.id, run.body.id);
+  assert.equal(retry.body.retryOfRunId, run.body.id);
+  assert.equal(retry.body.rootRunId, run.body.id);
+  assert.equal(retry.body.attemptNumber, 2);
+  assert.equal((await authRequest(base, `/api/runs/${retry.body.id}/execute`, { method: 'POST' })).status, 200);
+
+  const staleRun = await authRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '卡死任务可以接管' }) });
+  const store = new JsonStore(join(folder, 'store.json'));
+  await store.update(data => { const item = data.runs.find(value => value.id === staleRun.body.id); item.status = 'running'; item.startedAt = new Date(Date.now() - 16 * 60_000).toISOString(); });
+  const recovered = await authRequest(base, `/api/runs/${staleRun.body.id}/execute`, { method: 'POST' });
+  assert.equal(recovered.status, 200);
+  assert.equal(recovered.body.recoveryCount, 1);
+  const audit = await authRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'run.retry_created'));
+  assert.ok(audit.body.some(item => item.action === 'run.recovered'));
+});
+
+test('failed executor preserves failure evidence and can create a separate retry', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-retry-'));
+  const server = createApp({ storeFile: join(folder, 'store.json'), browserRunExecutor: async () => { throw new Error('executor crashed'); } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const project = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '失败恢复项目', repo: folder, url: base, branch: 'main' }) });
+  await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, code: 'REC-01', title: '恢复', description: '执行器失败可重试', steps: [{ action: 'expectText', selector: 'body', value: 'ShipWitness' }] }) });
+  const run = await authRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '保留失败证据' }) });
+  assert.equal((await authRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' })).status, 500);
+  const failed = await authRequest(base, `/api/runs/${run.body.id}`);
+  assert.equal(failed.body.status, 'failed');
+  assert.equal(failed.body.failure, '执行器发生内部错误');
+  assert.ok(failed.body.failedAt);
+  const retry = await authRequest(base, `/api/runs/${run.body.id}/retry`, { method: 'POST' });
+  assert.equal(retry.status, 201);
+  assert.equal(retry.body.attemptNumber, 2);
+  assert.equal((await authRequest(base, `/api/runs/${run.body.id}`)).body.status, 'failed');
 });
 
 test('stale sending webhook delivery is reclaimed after an interrupted worker', async t => {

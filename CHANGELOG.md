@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.11
+
+- Made completed and failed acceptance evidence immutable instead of overwriting it on rerun.
+- Added linked retry tasks with root/source identity and monotonically increasing attempt numbers.
+- Added stale-run recovery after a 15-minute lease, recovery counts, failure timestamps, UI actions, and audit evidence.
+
 ## 0.4.0-dev.10
 
 - Added immutable, integrity-bearing audit export snapshots with controlled downloads.

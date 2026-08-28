@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.10';
+const serviceVersion = '0.4.0-dev.11';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -608,10 +608,21 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
-          const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', createdAt: new Date().toISOString() };
+          const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
           data.runs.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.created', entityType: 'run', entityId: value.id, details: { criteriaCount: criteria.length }, at: value.createdAt }); return value;
         });
         return json(res, 201, run);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'runs' && segments[2] && segments[3] === 'retry') {
+        const retried = await store.update(data => {
+          const source = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!source) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          if (!['completed', 'failed'].includes(source.status)) throw Object.assign(new Error('只有已完成或执行失败的任务才能创建重试'), { status: 409 });
+          const now = new Date().toISOString(); const rootRunId = source.rootRunId || source.retryOfRunId || source.id;
+          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: source.requirement, criteria: structuredClone(source.criteria), status: 'queued', attemptNumber: Number(source.attemptNumber || 1) + 1, retryOfRunId: source.id, rootRunId, createdByUserId: currentUser.id, createdAt: now };
+          data.runs.unshift(run); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.retry_created', entityType: 'run', entityId: run.id, details: { sourceRunId: source.id, rootRunId, attemptNumber: run.attemptNumber }, at: now }); return run;
+        });
+        return json(res, 201, retried);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'runs' && segments[2] && segments[3] === 'execute') {
         const snapshot = await store.read();
@@ -620,13 +631,20 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = snapshot.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
         if (!project) return json(res, 409, { error: '任务关联的项目不存在' });
         validateTargetUrl(project.url, allowedTargetOrigins);
-        await store.update(data => { const current = data.runs.find(item => item.id === run.id); const stale = current.status === 'running' && new Date(current.startedAt || 0) <= new Date(Date.now() - 15 * 60_000); if (current.status === 'running' && !stale) throw Object.assign(new Error('任务正在执行'), { status: 409 }); current.status = 'running'; current.startedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: stale ? 'run.recovered' : 'run.started', entityType: 'run', entityId: current.id, at: current.startedAt }); });
+        await store.update(data => {
+          const current = data.runs.find(item => item.id === run.id); const stale = current.status === 'running' && new Date(current.startedAt || 0) <= new Date(Date.now() - 15 * 60_000);
+          if (current.status === 'running' && !stale) throw Object.assign(new Error('任务正在执行'), { status: 409 });
+          if (!stale && current.status !== 'queued') throw Object.assign(new Error('历史任务不可覆写，请创建重试任务'), { status: 409 });
+          current.status = 'running'; current.startedAt = new Date().toISOString(); current.startedByUserId = currentUser.id;
+          if (stale) { current.recoveryCount = Number(current.recoveryCount || 0) + 1; current.recoveredAt = current.startedAt; }
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: stale ? 'run.recovered' : 'run.started', entityType: 'run', entityId: current.id, details: { attemptNumber: current.attemptNumber || 1, recoveryCount: current.recoveryCount || 0 }, at: current.startedAt });
+        });
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
           const execution = hasBrowserSteps ? await browserRunExecutor({ project, run, artifactsDir, allowedOrigins: allowedTargetOrigins }) : await basicRunExecutor(project, run, allowedTargetOrigins);
           const completed = await store.update(data => {
             const current = data.runs.find(item => item.id === run.id);
-            current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString();
+            current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString(); current.failure = null;
             for (const issueId of current.issueIds || []) {
               const issue = data.issues.find(item => item.id === issueId);
               if (!issue) continue;
@@ -635,12 +653,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
               issue.timeline ||= [];
               issue.timeline.push({ status: issue.status, at: current.completedAt, note: execution.verdict === 'passed' ? '定向复验通过' : `定向复验未通过：${execution.summary}` });
             }
-            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.completed', entityType: 'run', entityId: current.id, details: { verdict: execution.verdict, executor: execution.executor }, at: current.completedAt });
+            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.completed', entityType: 'run', entityId: current.id, details: { verdict: execution.verdict, executor: execution.executor, attemptNumber: current.attemptNumber || 1, recoveryCount: current.recoveryCount || 0 }, at: current.completedAt });
             return current;
           });
           return json(res, 200, completed);
         } catch (error) {
-          await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '执行器发生内部错误'; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.failed', entityType: 'run', entityId: current.id, details: { failure: current.failure } }); });
+          await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '执行器发生内部错误'; current.failedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.failed', entityType: 'run', entityId: current.id, details: { failure: current.failure, attemptNumber: current.attemptNumber || 1 }, at: current.failedAt }); });
           throw error;
         }
       }
@@ -732,7 +750,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const criteria = issue.criterionId ? source.criteria.filter(item => (item.contractId || item.code) === issue.criterionId) : source.criteria;
           if (!criteria.length) throw Object.assign(new Error('没有可复验的标准'), { status: 409 });
           const now = new Date().toISOString();
-          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', parentRunId: source.id, issueIds: [issue.id], createdAt: now };
+          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', attemptNumber: 1, parentRunId: source.id, issueIds: [issue.id], createdAt: now };
           data.runs.unshift(run);
           issue.status = 'retesting'; issue.retestRunId = run.id; issue.updatedAt = now;
           issue.timeline ||= []; issue.timeline.push({ status: 'retesting', at: now, note: `已创建复验任务 ${run.id}` });
@@ -820,7 +838,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (!file.startsWith(`${publicDir}/`) && file !== join(publicDir, 'index.html')) return json(res, 403, { error: '禁止访问' });
       try {
         const content = await readFile(file);
-        res.writeHead(200, { ...securityHeaders, 'content-type': mime[extname(file)] || 'application/octet-stream', 'cache-control': extname(file) === '.html' ? 'no-cache' : 'public, max-age=300' });
+        const extension = extname(file); const cacheControl = ['.html', '.js', '.css'].includes(extension) ? 'no-cache' : 'public, max-age=300';
+        res.writeHead(200, { ...securityHeaders, 'content-type': mime[extension] || 'application/octet-stream', 'cache-control': cacheControl });
         res.end(req.method === 'HEAD' ? undefined : content);
       } catch { json(res, 404, { error: '文件不存在' }); }
     } catch (error) {

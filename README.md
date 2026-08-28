@@ -4,7 +4,7 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.10`。已具备真实浏览器验收、证据返工闭环、安全工作区、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和外部安全审查。
+> 当前版本：`0.4.0-dev.11`。已具备真实浏览器验收、不可覆写的重试与超时恢复、证据返工闭环、安全工作区、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和外部安全审查。
 
 ## 已实现
 
@@ -34,6 +34,7 @@ ShipWitness 是面向独立开发者和非技术产品负责人的开源发布�
 - 管理员重置成员密码、强制临时密码改密与全局会话吊销
 - 可确认、可审计、异常恢复后自动解决的工作区告警中心
 - 带完整性证明的审计快照导出、到期数据预览与受控运营数据清理
+- 历史证据不可覆写的关联重试、执行失败记录和超时任务安全接管
 - 基础执行证据：仓库状态、HTTP 响应、页面标题、耗时和内容指纹
 - 真实浏览器步骤：同源打开、点击、输入、可见性、文字和网址断言
 - 浏览器证据：逐步结果、最终网址、网络响应摘要和完整页面截图
@@ -77,7 +78,7 @@ npm run check
 
 没有配置浏览器步骤的标准只执行基础环境检查；没有明确结果断言的路径仍会标记为“证据不足”。浏览器执行器限制同源跳转、单标准最多 20 步，并且不会执行任意脚本。
 
-路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
+路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，任务恢复见 [docs/RUN_RECOVERY.md](docs/RUN_RECOVERY.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

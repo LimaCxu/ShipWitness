@@ -85,7 +85,7 @@ async function loadAccountPanel() {
   auditSection.hidden = !canAudit;
   if (canAudit) {
     auditIntegrity.textContent = integrity.valid ? `链完整 · ${integrity.checked} 条` : `链异常 · ${integrity.brokenEventId}`; auditIntegrity.className = integrity.valid ? 'valid' : 'invalid';
-    auditList.innerHTML = audit.map(item => `<article><i></i><div><b>${escapeHtml(({ 'workspace.initialized': '初始化工作区', 'user.login': '用户登录', 'user.logout': '用户退出', 'user.password_changed': '修改账户密码', 'member.password_reset': '管理员重置成员密码', 'workspace.created': '创建工作区', 'workspace.selected': '切换工作区', 'member.added': '添加成员', 'member.role_changed': '调整成员角色', 'member.removed': '移除工作区成员', 'alert.opened': '产生运行告警', 'alert.acknowledged': '确认运行告警', 'alert.resolved': '解决运行告警', 'audit.exported': '生成审计导出', 'retention.updated': '更新数据保留策略', 'retention.cleaned': '清理到期运营数据', 'project.created': '创建项目', 'project.updated': '更新项目', 'contract.created': '创建验收标准', 'contract.updated': '更新验收标准', 'run.created': '创建验收任务', 'run.started': '开始执行', 'run.recovered': '接管超时验收任务', 'run.completed': '完成验收', 'issue.created': '创建返工单', 'issue.status_changed': '更新返工状态', 'issue.retest_created': '创建定向复验', 'issue.exported': '导出返工单', 'release.decision_recorded': '签署发布决定', 'api_key.created': '创建机器 API Key', 'api_key.revoked': '撤销机器 API Key', 'webhook.created': '创建发布 Webhook', 'webhook.disabled': '停用发布 Webhook', 'webhook.queued': 'Webhook 已入队', 'webhook.delivered': 'Webhook 已送达', 'webhook.failed': 'Webhook 投递失败', 'dossier.signed': '生成签名卷宗', 'security.master_key_rotated': '轮换主加密密钥' }[item.action] || item.action))}</b><small>${escapeHtml(item.actor?.name || '系统')} · ${new Date(item.at).toLocaleString('zh-CN')}</small></div><code>#${item.sequence}</code></article>`).join('') || '<div class="contract-empty">尚无审计事件</div>';
+    auditList.innerHTML = audit.map(item => `<article><i></i><div><b>${escapeHtml(({ 'workspace.initialized': '初始化工作区', 'user.login': '用户登录', 'user.logout': '用户退出', 'user.password_changed': '修改账户密码', 'member.password_reset': '管理员重置成员密码', 'workspace.created': '创建工作区', 'workspace.selected': '切换工作区', 'member.added': '添加成员', 'member.role_changed': '调整成员角色', 'member.removed': '移除工作区成员', 'alert.opened': '产生运行告警', 'alert.acknowledged': '确认运行告警', 'alert.resolved': '解决运行告警', 'audit.exported': '生成审计导出', 'retention.updated': '更新数据保留策略', 'retention.cleaned': '清理到期运营数据', 'project.created': '创建项目', 'project.updated': '更新项目', 'contract.created': '创建验收标准', 'contract.updated': '更新验收标准', 'run.created': '创建验收任务', 'run.retry_created': '创建验收重试', 'run.started': '开始执行', 'run.recovered': '接管超时验收任务', 'run.completed': '完成验收', 'issue.created': '创建返工单', 'issue.status_changed': '更新返工状态', 'issue.retest_created': '创建定向复验', 'issue.exported': '导出返工单', 'release.decision_recorded': '签署发布决定', 'api_key.created': '创建机器 API Key', 'api_key.revoked': '撤销机器 API Key', 'webhook.created': '创建发布 Webhook', 'webhook.disabled': '停用发布 Webhook', 'webhook.queued': 'Webhook 已入队', 'webhook.delivered': 'Webhook 已送达', 'webhook.failed': 'Webhook 投递失败', 'dossier.signed': '生成签名卷宗', 'security.master_key_rotated': '轮换主加密密钥' }[item.action] || item.action))}</b><small>${escapeHtml(item.actor?.name || '系统')} · ${new Date(item.at).toLocaleString('zh-CN')}</small></div><code>#${item.sequence}</code></article>`).join('') || '<div class="contract-empty">尚无审计事件</div>';
   }
   toggleAccount(true);
 }
@@ -242,7 +242,7 @@ async function bootstrapBackend() {
     }
     const runs = await api('/api/runs');
     const projectRuns = saved ? runs.filter(item => item.projectId === saved.id) : [];
-    historyList.innerHTML = projectRuns.map((run, index) => { const meta = verdictMeta(run.execution?.verdict || (run.status === 'queued' ? 'queued' : 'evidence_insufficient')); return `<article class="${index === 0 ? 'current' : ''}" data-run-id="${run.id}"><i></i><div><header><b>${run.id.toUpperCase()}</b><time>${new Date(run.createdAt).toLocaleString('zh-CN')}</time></header><h3>${escapeHtml(run.requirement)}</h3><p>${run.criteria.length} 条标准 · ${meta.label}</p><span class="history-status ${run.execution?.verdict === 'passed' ? 'pass-status' : run.execution?.verdict === 'failed' ? 'fail-status' : 'hold-status'}">${meta.label}</span><button class="open-run-detail" data-run-id="${run.id}">查看真实任务</button></div></article>`; }).join('') || '<div class="contract-empty">还没有验收记录</div>';
+    historyList.innerHTML = projectRuns.map((run, index) => { const meta = verdictMeta(run.execution?.verdict || (run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : 'evidence_insufficient')); return `<article class="${index === 0 ? 'current' : ''}" data-run-id="${run.id}"><i></i><div><header><b>${run.id.toUpperCase()}</b><time>${new Date(run.createdAt).toLocaleString('zh-CN')}</time></header><h3>${escapeHtml(run.requirement)}</h3><p>${run.criteria.length} 条标准 · 第 ${run.attemptNumber || 1} 次 · ${meta.label}</p><span class="history-status ${run.execution?.verdict === 'passed' ? 'pass-status' : run.execution?.verdict === 'failed' || run.status === 'failed' ? 'fail-status' : 'hold-status'}">${meta.label}</span><button class="open-run-detail" data-run-id="${run.id}">查看真实任务</button></div></article>`; }).join('') || '<div class="contract-empty">还没有验收记录</div>';
     const summary = document.querySelectorAll('.history-summary b'); if (summary.length === 3) { summary[0].textContent = projectRuns.length; summary[1].textContent = projectRuns.filter(item => item.status !== 'completed').length; summary[2].textContent = projectRuns.filter(item => item.execution?.verdict === 'passed').length; }
     historyBtn.querySelector('span').textContent = String(projectRuns.length);
     if (runs[0]) {
@@ -375,30 +375,33 @@ async function loadRunTask() {
   const run = await api(`/api/runs/${backendRunId}`);
   const decisions = await api(`/api/decisions?runId=${backendRunId}`);
   renderLiveDashboard(backendProject, run);
-  runTaskId.textContent = run.id.toUpperCase();
-  runTaskStatus.textContent = run.status === 'completed' ? (run.execution?.executor === 'shipwitness-browser-v1' ? '真实验收已完成' : '基础检查已完成') : run.status === 'running' ? '正在执行' : '等待执行';
-  runTaskSummary.textContent = run.execution?.summary || '任务已保存，尚未运行任何检查。';
+  const stale = run.status === 'running' && Date.now() - new Date(run.startedAt || 0).getTime() > 15 * 60_000;
+  runTaskId.textContent = `${run.id.toUpperCase()} · 第 ${run.attemptNumber || 1} 次`;
+  runTaskStatus.textContent = run.status === 'completed' ? (run.execution?.executor === 'shipwitness-browser-v1' ? '真实验收已完成' : '基础检查已完成') : run.status === 'failed' ? '执行失败' : stale ? '执行超时，可接管' : run.status === 'running' ? '正在执行' : '等待执行';
+  runTaskSummary.textContent = run.execution?.summary || run.failure || (stale ? '任务超过 15 分钟未结束，可以安全接管并重新取证。' : '任务已保存，尚未运行任何检查。');
   backendCriteria.innerHTML = (run.execution?.criteriaResults || run.criteria.map(item => ({ ...item, result: 'queued', reason: '等待执行器' }))).map(item => `<article><i class="${item.result}"></i><div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.reason || item.description)}</p>${item.steps?.length ? `<small>${item.steps.filter(step => step.status === 'passed').length}/${item.steps.length} 步完成</small>` : ''}${item.screenshotUrl ? `<a href="${item.screenshotUrl}" target="_blank">查看截图证据 ↗</a>` : ''}</div><em>${resultLabel(item.result)}</em></article>`).join('');
   runDecisionHistory.hidden = !decisions.length;
   runDecisionHistory.innerHTML = decisions.map(item => `<article><span>${item.verdict === 'approve' ? '批准发布' : '暂不发布'}</span><b>${escapeHtml(item.owner)}</b><p>${escapeHtml(item.note || '无补充说明')} · ${new Date(item.createdAt).toLocaleString('zh-CN')}</p></article>`).join('');
   const canDecide = ['owner', 'approver'].includes(currentSession?.role) && run.status === 'completed';
   recordDecisionBtn.hidden = !canDecide; recordDecisionBtn.dataset.verdict = run.execution?.verdict === 'passed' ? 'approve' : 'hold'; recordDecisionBtn.textContent = run.execution?.verdict === 'passed' ? '批准本次发布' : '记录暂不发布';
+  executeRunBtn.disabled = run.status === 'running' && !stale;
+  executeRunBtn.dataset.mode = ['completed', 'failed'].includes(run.status) ? 'retry' : 'execute';
   if (run.execution) {
     if (run.execution.executor === 'shipwitness-browser-v1') {
       const passed = run.execution.criteriaResults.filter(item => item.result === 'passed').length;
       const failed = run.execution.criteriaResults.filter(item => item.result === 'failed').length;
       systemEvidence.innerHTML = `<article><span>浏览器引擎</span><b>${run.execution.browser?.status === 'ready' ? 'Chromium 已执行' : '环境不可用'}</b><p>${escapeHtml(run.execution.browser?.error || '真实无头浏览器')}</p></article><article><span>业务断言</span><b>${passed} 条通过</b><p>${failed} 条失败 · ${run.criteria.length - passed - failed} 条证据不足</p></article><article><span>执行器</span><b>Browser v1</b><p>截图、步骤和网络响应已记录</p></article>`;
       runTaskBoundary.textContent = '真实浏览器只对有明确断言且全部成功的标准判定通过。';
-      executeRunBtn.textContent = '重新执行真实验收';
+      executeRunBtn.textContent = '创建新任务并重试真实验收';
     } else {
       const target = run.execution.target, repository = run.execution.repository;
       systemEvidence.innerHTML = `<article><span>项目目录</span><b>${resultLabel(repository.status)}</b><p>${repository.detail}</p></article><article><span>测试网址</span><b>HTTP ${target.httpStatus ?? '—'}</b><p>${target.title || target.error || target.finalUrl || '无标题'}</p></article><article><span>内容指纹</span><b>${target.contentSha256?.slice(0, 12) || '未生成'}</b><p>${target.durationMs} ms · 检查 ${target.bodyBytesInspected || 0} bytes</p></article>`;
       runTaskBoundary.textContent = '当前任务没有浏览器步骤，只执行了基础环境检查。';
-      executeRunBtn.textContent = '重新执行基础检查';
+      executeRunBtn.textContent = '创建新任务并重试基础检查';
     }
   } else {
     systemEvidence.innerHTML = '<div class="empty-task">尚未执行基础检查</div>';
-    executeRunBtn.textContent = '执行基础检查';
+    executeRunBtn.textContent = run.status === 'failed' ? '创建新任务并重试' : stale ? '接管超时任务' : run.status === 'running' ? '任务执行中' : '执行基础检查';
   }
   toggleRunTask(true);
 }
@@ -406,7 +409,7 @@ closeRunTask.onclick = () => toggleRunTask(false); runTaskMask.onclick = () => t
 document.addEventListener('click', event => { const trigger = event.target.closest('.open-run-detail') || event.target.closest('#viewQueueBtn'); if (trigger) { if (trigger.dataset.runId) backendRunId = trigger.dataset.runId; loadRunTask().catch(error => toast(error.message)); } });
 executeRunBtn.onclick = async () => {
   executeRunBtn.disabled = true; executeRunBtn.textContent = '正在执行与取证…'; runTaskStatus.textContent = '正在执行';
-  try { await api(`/api/runs/${backendRunId}/execute`, { method: 'POST' }); await loadRunTask(); toast('验收证据已保存到后端'); }
+  try { if (executeRunBtn.dataset.mode === 'retry') { const retry = await api(`/api/runs/${backendRunId}/retry`, { method: 'POST' }); backendRunId = retry.id; } await api(`/api/runs/${backendRunId}/execute`, { method: 'POST' }); await loadRunTask(); toast('验收证据已保存，历史任务保持不变'); }
   catch (error) { toast(error.message); }
   finally { executeRunBtn.disabled = false; }
 };
