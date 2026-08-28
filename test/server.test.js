@@ -59,6 +59,7 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /profileForm/);
   assert.match(frontendScriptText, /workspaceIdentityForm/);
   assert.match(frontendScriptText, /feedbackPanel/);
+  assert.match(frontendScriptText, /feedbackActionDialog/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -629,14 +630,21 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   const created = await memberRequest(base, '/api/feedback', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, kind: 'usability', severity: 'high', title: '第一次使用找不到反馈入口', description: '希望在顶部提供稳定入口，并能看到处理状态。' }) });
   assert.equal(created.status, 201); assert.equal(created.body.status, 'new');
   assert.equal((await memberRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) })).status, 403);
+  assert.equal((await memberRequest(base, `/api/feedback/${created.body.id}/promote`, { method: 'POST', body: JSON.stringify({ expectedResult: '提供明确反馈入口' }) })).status, 403);
   assert.equal((await memberRequest(base, '/api/feedback/export')).status, 403);
 
   const inbox = await ownerRequest(base, '/api/inbox');
   assert.ok(inbox.body.items.some(item => item.action.kind === 'feedback' && item.action.id === created.body.id));
   const listed = await ownerRequest(base, '/api/feedback?status=new');
   assert.equal(listed.body.length, 1); assert.equal(listed.body[0].reporter.name, '试点成员'); assert.equal(listed.body[0].project.name, '试点项目');
-  const updated = await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'planned', note: '纳入下个版本' }) });
-  assert.equal(updated.body.status, 'planned'); assert.equal(updated.body.timeline.at(-1).note, '纳入下个版本');
+  const promoted = await ownerRequest(base, `/api/feedback/${created.body.id}/promote`, { method: 'POST', body: JSON.stringify({ title: '反馈入口清晰可见', expectedResult: '登录后顶部必须显示可操作的反馈入口。' }) });
+  assert.equal(promoted.status, 201); assert.equal(promoted.body.feedback.status, 'planned'); assert.equal(promoted.body.contract.enabled, false); assert.equal(promoted.body.contract.sourceFeedbackId, created.body.id);
+  assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}/promote`, { method: 'POST', body: JSON.stringify({ expectedResult: '不得重复' }) })).status, 409);
+  const contracts = await ownerRequest(base, `/api/contracts?projectId=${project.body.id}`);
+  assert.equal(contracts.body.filter(item => item.sourceFeedbackId === created.body.id).length, 1);
+  assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) })).status, 400);
+  const updated = await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved', note: '已在新版本中提供顶部入口并完成验收' }) });
+  assert.equal(updated.body.status, 'resolved'); assert.match(updated.body.timeline.at(-1).note, /完成验收/);
   const exported = await ownerRequest(base, '/api/feedback/export');
   assert.equal(exported.body.schema, 'shipwitness.pilot-feedback.v1'); assert.equal(exported.body.items.length, 1); assert.match(exported.headers.get('content-disposition'), /attachment/);
 
@@ -645,6 +653,7 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   await ownerRequest(base, `/api/workspaces/${originalWorkspaceId}/select`, { method: 'POST' });
   const audit = await ownerRequest(base, '/api/audit');
   assert.ok(audit.body.some(item => item.action === 'feedback.created'));
+  assert.ok(audit.body.some(item => item.action === 'feedback.promoted'));
   assert.ok(audit.body.some(item => item.action === 'feedback.status_changed'));
   assert.ok(audit.body.some(item => item.action === 'feedback.exported'));
 });

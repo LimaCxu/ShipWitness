@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.33
+
+- Added manager-controlled conversion from project feedback to a disabled acceptance-contract draft.
+- Prevented duplicate conversion and preserved the feedback-to-contract provenance in data and audit history.
+- Replaced one-click status changes with a structured handling dialog; resolved and declined feedback now require a written conclusion.
+
 ## 0.4.0-dev.32
 
 - Added a workspace-scoped pilot feedback center for issues, suggestions, and usability observations.

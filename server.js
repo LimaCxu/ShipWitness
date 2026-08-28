@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.32';
+const serviceVersion = '0.4.0-dev.33';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -1262,15 +1262,36 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         await store.update(current => appendAudit(current, { workspaceId, actorUserId: currentUser.id, action: 'feedback.exported', entityType: 'workspace', entityId: workspaceId, details: { count: items.length }, at: now }));
         return json(res, 200, document, { 'content-disposition': `attachment; filename="shipwitness-feedback-${now.slice(0, 10)}.json"` });
       }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'feedback' && segments[2] && segments[3] === 'promote' && segments.length === 4) {
+        requireRole(['owner', 'approver']); const input = await body(req); const now = new Date().toISOString();
+        const result = await store.update(data => {
+          const feedback = data.pilotFeedback.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!feedback) throw Object.assign(new Error('试点反馈不存在'), { status: 404 });
+          if (!feedback.projectId) throw Object.assign(new Error('工作区通用反馈必须先关联项目才能转为验收标准'), { status: 409 });
+          if (feedback.linkedContractId) throw Object.assign(new Error('该反馈已经转为验收标准'), { status: 409 });
+          if (['resolved', 'declined'].includes(feedback.status)) throw Object.assign(new Error('已结束的反馈不能再转为验收标准'), { status: 409 });
+          const project = data.projects.find(item => item.id === feedback.projectId && item.workspaceId === workspaceId && !item.archivedAt);
+          if (!project) throw Object.assign(new Error('关联项目不存在或已归档'), { status: 409 });
+          const code = `FB-${feedback.id.slice(-6).toUpperCase()}`;
+          const contract = { id: createId('ctr'), workspaceId, projectId: project.id, code, title: required(input.title || `反馈验收：${feedback.title}`, '标准名称', 500), description: required(input.expectedResult, '正确结果', 5000), category: feedback.kind === 'usability' ? '可用性' : feedback.kind === 'suggestion' ? '业务流程' : '缺陷回归', severity: feedback.severity === 'blocker' ? 'blocker' : feedback.severity === 'high' ? 'major' : 'minor', steps: [], enabled: false, version: 1, sourceFeedbackId: feedback.id, createdAt: now, updatedAt: now };
+          data.contracts.unshift(contract); const from = feedback.status; feedback.status = 'planned'; feedback.linkedContractId = contract.id; feedback.updatedAt = now; feedback.timeline ||= []; feedback.timeline.push({ status: 'planned', at: now, actorUserId: currentUser.id, note: `已生成验收标准草稿 ${code}` });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.promoted', entityType: 'pilot_feedback', entityId: feedback.id, details: { contractId: contract.id, projectId: project.id, from, to: feedback.status }, at: now });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'contract.created', entityType: 'contract', entityId: contract.id, details: { projectId: project.id, code, sourceFeedbackId: feedback.id, enabled: false }, at: now });
+          return { feedback, contract };
+        });
+        return json(res, 201, result);
+      }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'feedback' && segments[2] && segments.length === 3) {
         requireRole(['owner', 'approver']); const input = await body(req); const allowed = ['new', 'triaged', 'planned', 'resolved', 'declined'];
         if (!allowed.includes(input.status)) return json(res, 400, { error: '反馈状态无效' });
+        const note = String(input.note || '').trim().slice(0, 1000);
+        if (['resolved', 'declined'].includes(input.status) && !note) return json(res, 400, { error: '结束反馈前必须填写处理结论' });
         const feedback = await store.update(data => {
           const current = data.pilotFeedback.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!current) throw Object.assign(new Error('试点反馈不存在'), { status: 404 });
           if (current.status === input.status) return current;
-          const from = current.status; current.status = input.status; current.updatedAt = new Date().toISOString(); current.timeline ||= []; current.timeline.push({ status: input.status, at: current.updatedAt, actorUserId: currentUser.id, note: String(input.note || '').slice(0, 1000) });
-          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.status_changed', entityType: 'pilot_feedback', entityId: current.id, details: { from, to: input.status, note: String(input.note || '').slice(0, 1000) }, at: current.updatedAt }); return current;
+          const from = current.status; current.status = input.status; current.updatedAt = new Date().toISOString(); current.timeline ||= []; current.timeline.push({ status: input.status, at: current.updatedAt, actorUserId: currentUser.id, note });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.status_changed', entityType: 'pilot_feedback', entityId: current.id, details: { from, to: input.status, note }, at: current.updatedAt }); return current;
         });
         return json(res, 200, feedback);
       }
