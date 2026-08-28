@@ -36,6 +36,26 @@ test('SMTP configuration is disabled by default and rejects partial credentials'
   assert.equal(smtpConfig({ SHIPWITNESS_SMTP_HOST: 'smtp.example.com', SHIPWITNESS_SMTP_FROM: 'notify@example.com' }).requireTLS, true);
 });
 
+test('acceptance credential vault is owner-only and never returns secret material', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-secrets-'));
+  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerRequest = authenticatedRequest(await setupOwner(base));
+  const plaintext = 'customer-password-never-returned';
+  const created = await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'login_password', value: plaintext }) });
+  assert.equal(created.status, 201); assert.equal(created.body.name, 'LOGIN_PASSWORD');
+  assert.equal(JSON.stringify(created.body).includes(plaintext), false); assert.equal(Object.hasOwn(created.body, 'encryptedValue'), false);
+  const listed = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(listed.status, 200); assert.equal(listed.body.length, 1);
+  assert.equal(JSON.stringify(listed.body).includes(plaintext), false); assert.equal(Object.hasOwn(listed.body[0], 'encryptedValue'), false);
+  assert.equal((await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'LOGIN_PASSWORD', value: 'other' }) })).status, 409);
+  await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'secret-member@example.com', password: 'member-password-123', role: 'member' }) });
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'secret-member@example.com', password: 'member-password-123' }) });
+  const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, '/api/acceptance-secrets')).status, 403);
+  assert.equal((await ownerRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'DELETE' })).status, 200);
+  assert.deepEqual((await ownerRequest(base, '/api/acceptance-secrets')).body, []);
+});
+
 test('project, preflight, run and dossier API work together', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-'));
   let githubInput;

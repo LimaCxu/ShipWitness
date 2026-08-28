@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.43';
+const serviceVersion = '0.4.0-dev.44';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -1095,6 +1095,19 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const { tokenHash: hidden, ...safe } = created;
         return json(res, 201, { ...safe, token: secret });
       }
+      if (req.method === 'GET' && url.pathname === '/api/acceptance-secrets') {
+        requireRole(['owner']);
+        return json(res, 200, authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(({ encryptedValue: hidden, ...item }) => item));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/acceptance-secrets') {
+        requireRole(['owner']); const input = await body(req); const name = required(input.name, '凭据名称', 64).toUpperCase();
+        if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) return json(res, 400, { error: '凭据名称必须以字母开头，只能包含大写字母、数字和下划线' });
+        const value = required(input.value, '凭据值', 10_000); const created = await store.update(data => { if (data.acceptanceSecrets.some(item => item.workspaceId === workspaceId && item.name === name)) throw Object.assign(new Error('凭据名称已存在；请先删除再重新创建'), { status: 409 }); const now = new Date().toISOString(); const item = { id: createId('asec'), workspaceId, name, encryptedValue: encryptSecret(value, signingSecret), createdByUserId: currentUser.id, createdAt: now, updatedAt: now }; data.acceptanceSecrets.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.created', entityType: 'acceptance_secret', entityId: item.id, details: { name }, at: now }); return item; });
+        const { encryptedValue: hidden, ...safe } = created; return json(res, 201, safe);
+      }
+      if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'acceptance-secrets' && segments[2]) {
+        requireRole(['owner']); const removed = await store.update(data => { const item = data.acceptanceSecrets.find(value => value.id === segments[2] && value.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); data.acceptanceSecrets = data.acceptanceSecrets.filter(value => value.id !== item.id); const at = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.deleted', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name }, at }); return { id: item.id, name: item.name, deletedAt: at }; }); return json(res, 200, removed);
+      }
       if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'api-keys' && segments[2]) {
         requireRole(['owner']);
         const revoked = await store.update(data => {
@@ -1453,7 +1466,9 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         });
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
-          const execution = hasBrowserSteps ? await browserRunExecutor({ project, run, artifactsDir, allowedOrigins: allowedTargetOrigins }) : await basicRunExecutor(project, run, allowedTargetOrigins);
+          const secretRefs = new Set(run.criteria.flatMap(item => item.steps || []).map(step => step.secretRef).filter(Boolean)); const executionSecrets = {};
+          for (const item of authData.acceptanceSecrets.filter(value => value.workspaceId === workspaceId && secretRefs.has(value.name))) executionSecrets[item.name] = decryptSecret(item.encryptedValue, signingSecret);
+          const execution = hasBrowserSteps ? await browserRunExecutor({ project, run, artifactsDir, allowedOrigins: allowedTargetOrigins, secrets: executionSecrets }) : await basicRunExecutor(project, run, allowedTargetOrigins);
           const completed = await store.update(data => {
             const current = data.runs.find(item => item.id === run.id);
             current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString(); current.failure = null;

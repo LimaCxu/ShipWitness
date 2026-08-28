@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.44
+
+- Added an owner-managed encrypted acceptance credential vault for authenticated browser checks.
+- Browser `fill` steps can reference `{{secret:NAME}}`; plaintext is decrypted only for execution and excluded from contracts, run evidence, audit details, and signed dossiers.
+- Included acceptance credentials in master-key rotation and added PostgreSQL migration 018.
+
 ## 0.4.0-dev.43
 
 - Added guarded restore drills that overwrite only a separately configured database whose name ends in `_drill` or `_restore_drill`.
