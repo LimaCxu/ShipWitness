@@ -3,14 +3,17 @@ FROM mcr.microsoft.com/playwright:v1.62.1-noble
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4173 \
-    SHIPWITNESS_STORE_FILE=/app/data/store.json
+    SHIPWITNESS_ARTIFACTS_DIR=/app/data/evidence
 
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client && rm -rf /var/lib/apt/lists/*
 COPY package.json ./
 COPY package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY server.js ./
 COPY lib ./lib
+COPY migrations ./migrations
+COPY scripts ./scripts
 COPY outputs/shipwitness-prototype ./outputs/shipwitness-prototype
 RUN mkdir -p /app/data && chown -R pwuser:pwuser /app
 

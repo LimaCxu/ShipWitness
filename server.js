@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { JsonStore, createId } from './lib/store.js';
+import { PostgresStore } from './lib/postgres-store.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 
@@ -14,7 +15,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.1';
+const serviceVersion = '0.4.0-dev.2';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -106,11 +107,11 @@ async function executeRun(project, run) {
   };
 }
 
-export function createApp({ storeFile = defaultStore } = {}) {
-  const store = new JsonStore(storeFile);
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore } = {}) {
+  const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean);
@@ -121,7 +122,10 @@ export function createApp({ storeFile = defaultStore } = {}) {
         if (req.headers.origin !== expectedOrigin) return json(res, 403, { error: '请求来源无效' });
       }
 
-      if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'shipwitness', version: serviceVersion, uptimeSeconds: Math.round(process.uptime()), storage: 'json-file' });
+      if (req.method === 'GET' && url.pathname === '/api/health') {
+        try { return json(res, 200, { ok: true, service: 'shipwitness', version: serviceVersion, uptimeSeconds: Math.round(process.uptime()), storage: await store.health() }); }
+        catch { return json(res, 503, { ok: false, service: 'shipwitness', version: serviceVersion, error: '存储当前不可用' }); }
+      }
       if (req.method === 'GET' && url.pathname === '/api/setup/status') {
         const data = await store.read();
         return json(res, 200, { needsSetup: !data.users.length });
@@ -428,6 +432,8 @@ export function createApp({ storeFile = defaultStore } = {}) {
       json(res, error.status || 500, { error: error.status ? error.message : '服务器内部错误' });
     }
   });
+  server.closeStore = () => store.close?.();
+  return server;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -437,7 +443,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   server.listen(port, host, () => console.log(`ShipWitness ${serviceVersion} running at http://${host}:${port}`));
   const shutdown = signal => {
     console.log(`${signal} received, closing ShipWitness`);
-    server.close(error => process.exit(error ? 1 : 0));
+    server.close(async error => { await server.closeStore?.(); process.exit(error ? 1 : 0); });
     setTimeout(() => process.exit(1), 10_000).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

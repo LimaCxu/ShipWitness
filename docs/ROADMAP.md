@@ -19,11 +19,11 @@
 - [x] Authentication and workspace isolation
 - [x] Owner, approver, and member roles with member management
 - Approval audit timeline and issue integrations
-- PostgreSQL storage and migrations
+- [x] PostgreSQL storage, versioned migrations, JSON import, and health checks
 
 ## 1.0 — Self-hosted release gate
 
 - Signed release artifacts and upgrade/rollback tooling
-- Backup and restore verification
+- [x] Backup manifest, integrity verification, and restore drill tooling
 - Stable extension API for coding-agent handoff
 - End-to-end security review and deployment guide

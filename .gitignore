@@ -7,4 +7,5 @@ data/*.json
 data/*.tmp
 data/evidence/
 coverage/
+backups/
 *.log
