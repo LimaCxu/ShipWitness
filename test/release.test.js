@@ -10,13 +10,13 @@ test('release manifest verifies every payload file and detects tampering', async
   await mkdir(join(folder, 'docs'));
   await writeFile(join(folder, 'server.js'), 'console.log("release")\n');
   await writeFile(join(folder, 'docs', 'README.md'), '# Release\n');
-  await writeFile(join(folder, 'SBOM.cdx.json'), JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.5', metadata: { component: { name: 'shipwitness', version: '0.4.0-dev.5' } }, components: [{ name: 'playwright' }], dependencies: [] }));
+  await writeFile(join(folder, 'SBOM.cdx.json'), JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.5', metadata: { component: { name: 'shipwitness', version: '0.4.0-dev.5' } }, components: [{ name: 'playwright', purl: 'pkg:npm/playwright@1.0.0', licenses: [{ license: { id: 'Apache-2.0' } }] }], dependencies: [] }));
   const files = await collectReleaseFiles(folder);
   await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', commit: 'a'.repeat(40), files }));
   const result = await verifyReleaseDirectory(folder);
   assert.equal(result.valid, true);
   assert.equal(result.filesVerified, 3);
-  assert.deepEqual(result.sbom, { format: 'CycloneDX', specVersion: '1.5', components: 1 });
+  assert.deepEqual(result.sbom, { format: 'CycloneDX', specVersion: '1.5', components: 1, licenses: ['Apache-2.0'] });
   await writeFile(join(folder, 'server.js'), 'changed\n');
   await assert.rejects(verifyReleaseDirectory(folder), /校验失败/);
 });
@@ -36,4 +36,13 @@ test('release verification rejects a missing or mismatched software bill of mate
   const files = await collectReleaseFiles(folder);
   await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', commit: 'b'.repeat(40), files }));
   await assert.rejects(verifyReleaseDirectory(folder), /SBOM 根组件/);
+});
+
+test('release verification rejects unreviewed production licenses', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-release-'));
+  await writeFile(join(folder, 'server.js'), 'console.log("release")\n');
+  await writeFile(join(folder, 'SBOM.cdx.json'), JSON.stringify({ bomFormat: 'CycloneDX', specVersion: '1.5', metadata: { component: { name: 'shipwitness', version: '0.4.0-dev.5' } }, components: [{ name: 'unknown-package', purl: 'pkg:npm/unknown-package@1.0.0', licenses: [{ license: { id: 'GPL-3.0-only' } }] }], dependencies: [] }));
+  const files = await collectReleaseFiles(folder);
+  await writeFile(join(folder, 'RELEASE.json'), JSON.stringify({ schema: releaseSchema, version: '0.4.0-dev.5', commit: 'c'.repeat(40), files }));
+  await assert.rejects(verifyReleaseDirectory(folder), /未批准许可证/);
 });

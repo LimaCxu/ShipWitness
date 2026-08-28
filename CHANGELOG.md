@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.55
+
+- SBOM verification now requires an npm Package URL and an explicit license declaration for every production component.
+- Releases fail closed when a dependency uses a license outside the reviewed Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, and MIT-0 allowlist.
+
 ## 0.4.0-dev.54
 
 - Release bundles now include a normalized CycloneDX 1.5 SBOM generated from the locked production dependency graph.

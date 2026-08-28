@@ -34,6 +34,8 @@ GitHub CI and tag releases additionally build the exact Docker delivery image an
 
 Every extracted release includes `SBOM.cdx.json`, a CycloneDX 1.5 inventory generated from the locked production dependency graph. `npm run release:verify -- <release-directory>` validates its root product identity, version, component list, and checksum registration together with the remaining payload. Keep the SBOM beside the release manifest in customer delivery records.
 
+The verifier also requires an npm Package URL and a reviewed SPDX license for every production component. The current allowlist is Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, and MIT-0. Adding a dependency under another license requires an explicit policy change and review; it cannot silently enter a release.
+
 Before requesting a public-production decision, record the independent review evidence and stable-release lifecycle metadata:
 
 ```bash

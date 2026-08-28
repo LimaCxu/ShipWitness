@@ -42,6 +42,7 @@
 - [x] Isolated delivery self-smoke covering real browser evidence, release gate, and signed dossier
 - [x] Exact delivery-image self-smoke enforced in CI and tag releases
 - [x] Checksummed CycloneDX production SBOM enforced in every release bundle
+- [x] Fail-closed production dependency identity and license policy
 
 ## 1.0 — Self-hosted release gate
 
