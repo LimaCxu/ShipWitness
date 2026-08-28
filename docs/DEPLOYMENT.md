@@ -66,6 +66,8 @@ Each backup contains a custom-format PostgreSQL dump, evidence files, and a SHA-
 
 Restore to a new database first. The restore command verifies every manifest hash before changing the target database and refuses to run without an explicit confirmation variable.
 
+For the governed in-product drill, create a disposable database whose name ends in `_drill` or `_restore_drill`, grant the application deployment account access to it, and set `SHIPWITNESS_DRILL_DATABASE_URL`. The value must never point to the live `DATABASE_URL`. The backup center requires typed confirmation, restores into that isolated target, probes core tables, and records only redacted counts and timestamps.
+
 ```bash
 SHIPWITNESS_RESTORE_CONFIRM=YES \
 DATABASE_URL='postgresql://.../shipwitness_restore_test' \

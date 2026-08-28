@@ -16,12 +16,13 @@ services:
 
   shipwitness:
     build: .
-    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.42}
+    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.43}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://shipwitness:${POSTGRES_PASSWORD}@postgres:5432/shipwitness
+      SHIPWITNESS_DRILL_DATABASE_URL: ${SHIPWITNESS_DRILL_DATABASE_URL:-}
       SHIPWITNESS_ARTIFACTS_DIR: /app/data/evidence
       SHIPWITNESS_MASTER_KEY: ${SHIPWITNESS_MASTER_KEY:?Set SHIPWITNESS_MASTER_KEY in .env}
       SHIPWITNESS_ALLOWED_TARGET_ORIGINS: ${SHIPWITNESS_ALLOWED_TARGET_ORIGINS:-}

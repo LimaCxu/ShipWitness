@@ -48,5 +48,6 @@
 - Independent penetration test and published remediation evidence
 - [x] Supported 1.0 lifecycle, machine-readable support status, and end-of-support enforcement
 - [x] Backup manifest, integrity verification, and restore drill tooling
+- [x] In-product isolated restore drill with target guardrails, core-data probes, and auditable evidence
 - [x] Stable versioned extension API for coding-agent task submission, execution, evidence reads, and idempotent retries
 - [x] End-to-end maintainer security review and deployment guide (independent test remains a separate gate)

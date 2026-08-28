@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.43
+
+- Added guarded restore drills that overwrite only a separately configured database whose name ends in `_drill` or `_restore_drill`.
+- Restore drills verify the backup manifest, execute a real `pg_restore`, probe schema and core record counts, and persist a redacted result in the audit chain.
+- Added recovery-drill history to the backup center and a 90-day recovery-drill readiness check.
+- Added PostgreSQL migration 017 and regression coverage for target isolation, credential redaction, authorization, confirmation, and evidence recording.
+
 ## 0.4.0-dev.42
 
 - Added an owner-only deployment configuration center covering database, master key, HTTPS, SMTP, GitHub, backups, target allowlists, and security-review evidence.
