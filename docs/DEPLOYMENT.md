@@ -1,5 +1,11 @@
 # ShipWitness private deployment
 
+## 脱敏部署配置中心
+
+管理员可在“工作区设置 → 集成 → 部署配置中心”查看当前部署是否已配置 PostgreSQL、持久化主密钥、HTTPS 公开地址、SMTP、GitHub 签名事件、备份恢复点、验收目标白名单和独立安全评审证据，并下载 `shipwitness.deployment-configuration.v1` 运维清单。
+
+清单只包含布尔状态、处理建议和环境变量名称，绝不包含实际地址、域名、账号、密码、密钥、目录、连接字符串或安全报告编号。页面为只读视图；配置修改仍必须通过部署环境或秘密管理系统完成。
+
 ## Production baseline
 
 Use PostgreSQL mode for durable deployments. JSON mode remains available for local evaluation and migration only.

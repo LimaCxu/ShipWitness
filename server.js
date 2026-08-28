@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.41';
+const serviceVersion = '0.4.0-dev.42';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -287,6 +287,24 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       { id: 'email', label: '邮件服务', status: emailEnabled ? 'pass' : 'warning', detail: emailEnabled ? 'SMTP 已配置' : 'SMTP 未配置，通知不会主动发送' }
     ];
     return { needsSetup: !data.users.length, version, deploymentMode: publicHttps ? 'public_candidate' : 'controlled_pilot', storage: { status: storage.status, engine: storage.engine || 'unknown' }, masterKeyConfigured, publicUrlConfigured, publicHttps, emailEnabled, checks };
+  };
+  const deploymentConfiguration = async () => {
+    const storage = await store.health(); let masterKeyConfigured = false;
+    try { keyFromSecret(signingSecret); masterKeyConfigured = true; } catch {}
+    const publicUrlConfigured = Boolean(publicUrl); const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
+    const postgresConfigured = Boolean(databaseUrl) && String(storage.engine || '').toLowerCase().startsWith('postgresql'); const smtpTlsRequired = Boolean(emailConfiguration?.enabled && emailConfiguration.requireTLS !== false);
+    const items = [
+      { id: 'database', label: 'PostgreSQL 数据库', status: postgresConfigured ? 'pass' : 'block', configured: postgresConfigured, detail: postgresConfigured ? '已通过 PostgreSQL 健康检查。' : '当前不是可交付的 PostgreSQL 存储。', requiredVariables: ['DATABASE_URL'], action: postgresConfigured ? null : '配置独立 PostgreSQL，并完成迁移与健康检查。' },
+      { id: 'master_key', label: '持久化主密钥', status: masterKeyConfigured ? 'pass' : 'block', configured: masterKeyConfigured, detail: masterKeyConfigured ? '主密钥格式有效；具体值不会进入本清单。' : '签名、加密和密钥轮换没有持久化根密钥。', requiredVariables: ['SHIPWITNESS_MASTER_KEY'], action: masterKeyConfigured ? null : '生成 32 字节 Base64 密钥并存入部署侧秘密管理。' },
+      { id: 'public_url', label: 'HTTPS 公开地址', status: publicHttps ? 'pass' : 'block', configured: publicUrlConfigured, detail: publicHttps ? '公开地址已配置为 HTTPS；域名不会进入导出。' : publicUrlConfigured ? '已配置地址，但不是 HTTPS。' : '尚未配置公开地址。', requiredVariables: ['SHIPWITNESS_PUBLIC_URL'], action: publicHttps ? null : '在反向代理启用 HTTPS，并填写平台公开地址。' },
+      { id: 'email', label: 'SMTP 邮件通知', status: emailEnabled && smtpTlsRequired ? 'pass' : 'warning', configured: emailEnabled, detail: emailEnabled ? smtpTlsRequired ? '邮件服务已启用并要求 TLS。' : '邮件服务已启用，但未强制 TLS。' : '未启用邮件，邀请和找回密码不能主动送达。', requiredVariables: ['SHIPWITNESS_SMTP_HOST', 'SHIPWITNESS_SMTP_FROM', 'SHIPWITNESS_SMTP_REQUIRE_TLS'], action: emailEnabled && smtpTlsRequired ? null : '配置 SMTP，并保持 TLS 要求开启。' },
+      { id: 'github', label: 'GitHub 签名事件', status: githubWebhookSecret ? 'pass' : 'warning', configured: Boolean(githubWebhookSecret), detail: githubWebhookSecret ? 'Webhook 签名密钥已配置。' : '未启用 GitHub 自动同步，可继续人工同步。', requiredVariables: ['SHIPWITNESS_GITHUB_WEBHOOK_SECRET'], action: githubWebhookSecret ? null : '如需自动同步 push 与 CI，再配置 Webhook 签名密钥。' },
+      { id: 'backup', label: '备份目录与恢复点', status: backupManager.available && verifiedBackupAt ? 'pass' : 'warning', configured: Boolean(backupManager.available), detail: !backupManager.available ? '当前存储模式不支持数据库备份中心。' : verifiedBackupAt ? '备份中心可用，且存在已验证恢复点。' : '备份中心可用，但尚无已验证恢复点。', requiredVariables: ['SHIPWITNESS_BACKUP_DIR'], action: backupManager.available && verifiedBackupAt ? null : '使用 PostgreSQL 部署，创建备份并完成完整性校验。' },
+      { id: 'target_policy', label: '验收目标白名单', status: allowedTargetOrigins.length ? 'pass' : 'warning', configured: Boolean(allowedTargetOrigins.length), detail: allowedTargetOrigins.length ? `已允许 ${allowedTargetOrigins.length} 个目标来源；地址不会进入导出。` : '尚未配置显式目标来源，执行器仅接受默认本机范围。', requiredVariables: ['SHIPWITNESS_ALLOWED_TARGET_ORIGINS'], action: allowedTargetOrigins.length ? null : '按最小范围配置允许验收的来源地址。' },
+      { id: 'security_review', label: '独立安全评审证据', status: securityReviewReference && securityReviewedAt ? 'pass' : 'warning', configured: Boolean(securityReviewReference && securityReviewedAt), detail: securityReviewReference && securityReviewedAt ? '已登记外部评审元数据；报告内容不会进入清单。' : '尚未同时登记外部评审编号和完成日期。', requiredVariables: ['SHIPWITNESS_SECURITY_REVIEW_REFERENCE', 'SHIPWITNESS_SECURITY_REVIEWED_AT'], action: securityReviewReference && securityReviewedAt ? null : '正式公网发布前登记一年内独立安全评审。' }
+    ];
+    const blockers = items.filter(item => item.status === 'block').length; const warnings = items.filter(item => item.status === 'warning').length;
+    return { schema: 'shipwitness.deployment-configuration.v1', generatedAt: new Date().toISOString(), version, deploymentMode: publicHttps ? 'public_candidate' : 'controlled_pilot', verdict: { level: blockers ? 'incomplete' : warnings ? 'attention' : 'ready', blockers, warnings, passed: items.filter(item => item.status === 'pass').length }, boundary: '本清单只包含配置状态和环境变量名称，不包含地址、账号、密码、密钥、目录或连接字符串。部署配置只能在运行环境中修改。', items };
   };
   const queueEmail = (data, { workspaceId, to, kind, subject, text, html, entityId }) => {
     if (!emailEnabled) return null;
@@ -936,7 +954,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const githubProjects = authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt && item.githubRepo).length;
         const privilegedUserIds = new Set(authData.memberships.filter(item => item.workspaceId === workspaceId && ['owner', 'approver'].includes(item.role)).map(item => item.userId)); const privilegedWithoutMfa = authData.users.filter(item => privilegedUserIds.has(item.id) && !item.mfaSecretEncrypted).length;
         const checks = [
-          { id: 'postgres', category: '基础设施', label: '生产数据库', status: storage.engine === 'postgresql' ? 'pass' : 'block', detail: storage.engine === 'postgresql' ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: storage.engine === 'postgresql' ? null : '配置 DATABASE_URL 并执行迁移' },
+          { id: 'postgres', category: '基础设施', label: '生产数据库', status: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? 'pass' : 'block', detail: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? null : '配置 DATABASE_URL 并执行迁移' },
           { id: 'https', category: '访问安全', label: 'HTTPS 公网地址', status: publicHttps ? 'pass' : 'block', detail: publicHttps ? '已配置外部 HTTPS 地址，邀请和任务链接可安全生成。' : '未配置有效的 SHIPWITNESS_PUBLIC_URL HTTPS 地址。', action: publicHttps ? null : '在反向代理启用 HTTPS，并配置 SHIPWITNESS_PUBLIC_URL' },
           { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
           { id: 'privileged_mfa', category: '访问安全', label: '高权限账号两步验证', status: privilegedWithoutMfa ? 'warning' : 'pass', detail: privilegedWithoutMfa ? `${privilegedWithoutMfa} 个管理员或审批人尚未启用两步验证。` : `${privilegedUserIds.size} 个高权限账号均已启用两步验证。`, action: privilegedWithoutMfa ? '请管理员和审批人在账户安全中绑定 TOTP 验证器' : null },
@@ -1086,6 +1104,10 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         requireRole(['owner', 'approver']);
         const deliveries = authData.githubDeliveries.filter(item => item.workspaceIds?.includes(workspaceId)).sort((a, b) => b.receivedAt.localeCompare(a.receivedAt)).slice(0, 50).map(item => githubDeliveryForWorkspace(item, workspaceId, authData.projects));
         return json(res, 200, { configured: Boolean(githubWebhookSecret), endpoint: `${publicUrl || ''}/api/integrations/github/webhook`, supportedEvents: ['push', 'check_suite', 'check_run', 'workflow_run'], deliveries });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/deployment/configuration') {
+        requireRole(['owner']);
+        return json(res, 200, await deploymentConfiguration());
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'github-deliveries' && segments[2] && segments[3] === 'retry') {
         requireRole(['owner', 'approver']);

@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.42
+
+- Added an owner-only deployment configuration center covering database, master key, HTTPS, SMTP, GitHub, backups, target allowlists, and security-review evidence.
+- Added a downloadable `shipwitness.deployment-configuration.v1` operations handoff checklist containing configuration states and environment-variable names only.
+- Added regression coverage proving configured connection strings, hosts, users, passwords, secrets, paths, target origins, and review references never enter the report.
+- Kept configuration read-only in the product UI; secret values remain controlled by the deployment environment.
+
 ## 0.4.0-dev.41
 
 - Added an owner-only backup center for PostgreSQL dump creation, evidence copying, restore-point listing, and SHA-256 verification.

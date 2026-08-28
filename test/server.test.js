@@ -75,6 +75,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /继续创建管理员/);
   assert.match(frontendScriptText, /backupSection/);
   assert.match(frontendScriptText, /restore-preflight/);
+  assert.match(frontendScriptText, /deploymentConfigurationSection/);
+  assert.match(frontendScriptText, /ShipWitness-deployment-/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -749,7 +751,7 @@ test('readiness report is owner-only, conservative and never exposes configurati
 test('readiness report recognizes a fully configured production candidate', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-readiness-production-'));
   const store = new JsonStore(join(folder, 'store.json'));
-  store.health = async () => ({ status: 'ready', engine: 'postgresql' });
+  store.health = async () => ({ status: 'ready', engine: 'PostgreSQL 16.15' });
   const server = createApp({
     store,
     signingSecret,
@@ -1061,6 +1063,20 @@ test('backup center creates, verifies and preflights restore without mutating li
   const audit = await ownerRequest(base, '/api/audit'); for (const action of ['backup.created', 'backup.verified', 'backup.restore_preflighted']) assert.ok(audit.body.some(item => item.action === action));
   const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'backup-member@example.com', password: 'backup-member-password', role: 'member' }) }); assert.equal(member.status, 201);
   const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'backup-member@example.com', password: 'backup-member-password' }) }); const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]); assert.equal((await memberRequest(base, '/api/backups')).status, 403);
+});
+
+test('deployment configuration is owner-only and exports status without secret values', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-deployment-config-')); const store = new JsonStore(join(folder, 'store.json'));
+  store.health = async () => ({ status: 'ready', engine: 'PostgreSQL 16.15' });
+  const secrets = { database: 'postgresql://secret-user:database-password@db.internal/shipwitness', github: 'github-signing-secret', smtpHost: 'smtp.private.internal', smtpUser: 'smtp-private-user', smtpPassword: 'smtp-private-password', publicHost: 'private.shipwitness.example', backupPath: join(folder, 'customer-backups'), target: 'https://customer-private.example', review: 'PEN-SECRET-2026' };
+  const backupManager = { available: true, list: async () => [], create: async () => {}, verify: async () => {}, restorePreflight: async () => {} };
+  const server = createApp({ store, databaseUrl: secrets.database, signingSecret, githubWebhookSecret: secrets.github, publicUrl: `https://${secrets.publicHost}`, allowedTargetOrigins: [secrets.target], lastVerifiedBackupAt: new Date().toISOString(), securityReviewReference: secrets.review, securityReviewedAt: new Date().toISOString(), backupRoot: secrets.backupPath, backupManager, emailConfiguration: { enabled: true, host: secrets.smtpHost, from: 'private@example.com', requireTLS: true, auth: { user: secrets.smtpUser, pass: secrets.smtpPassword } }, emailSender: async () => ({ messageId: 'test' }) });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  const report = await ownerRequest(base, '/api/deployment/configuration'); assert.equal(report.status, 200); assert.equal(report.body.schema, 'shipwitness.deployment-configuration.v1'); assert.equal(report.body.verdict.blockers, 0); assert.equal(report.body.items.length, 8); assert.ok(report.body.items.every(item => Array.isArray(item.requiredVariables)));
+  const serialized = JSON.stringify(report.body); for (const secret of Object.values(secrets)) assert.equal(serialized.includes(secret), false); assert.equal(serialized.includes(signingSecret), false); assert.match(serialized, /SHIPWITNESS_MASTER_KEY/); assert.match(serialized, /DATABASE_URL/);
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '交付成员', email: 'delivery-member@example.com', password: 'delivery-member-password', role: 'member' }) }); assert.equal(member.status, 201);
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'delivery-member@example.com', password: 'delivery-member-password' }) }); const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]); assert.equal((await memberRequest(base, '/api/deployment/configuration')).status, 403);
 });
 
 test('browser executor performs a real assertion and records screenshot evidence', async t => {

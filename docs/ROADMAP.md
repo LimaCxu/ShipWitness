@@ -29,6 +29,7 @@
 - [x] Reusable acceptance-contract packs with previewed conflicts, safe import/export, and bulk state changes
 - [x] Reversible project archival with owner authorization, active-work protection, and preserved evidence
 - [x] Owner-only deployment readiness center with conservative environment grading and exportable evidence
+- [x] Secret-free deployment configuration center with an exportable operations handoff checklist
 - [x] Explicit GitHub commit and CI synchronization with immutable run binding and release-gate enforcement
 - [x] Signed GitHub push and CI webhooks with replay protection, automatic synchronization, event history, and retry
 - [x] Workspace-scoped pilot feedback intake, triage, team-inbox routing, audit, and export

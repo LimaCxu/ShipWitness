@@ -30,3 +30,34 @@
 .readiness-checks article.pass > em { color: #027a48; background: #ecfdf3; }
 .readiness-checks article.warning > em { color: #8b6113; background: #fff7e8; }
 .readiness-checks article.block > em { color: #b42318; background: #fff1f0; }
+
+.deployment-configuration-section { padding: 22px 26px; border-bottom: 1px solid #e4e7ec; }
+.deployment-configuration-section[hidden] { display: none; }
+.deployment-configuration-section > .section-title { align-items: center; }
+.deployment-configuration-section > .section-title > button { padding: 7px 10px; border: 1px solid #cfd6e3; border-radius: 6px; color: #4f46a5; background: #fff; font-size: 8px; font-weight: 650; cursor: pointer; }
+.deployment-configuration-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; padding: 14px; border: 1px solid #dfe3ec; border-left: 4px solid #667085; border-radius: 8px; background: #fff; }
+.deployment-configuration-summary.incomplete { border-left-color: #d2554b; background: #fffafa; }
+.deployment-configuration-summary.attention { border-left-color: #d09a31; background: #fffcf5; }
+.deployment-configuration-summary.ready { border-left-color: #2f9b75; background: #f7fcfa; }
+.deployment-configuration-summary > div { display: grid; gap: 4px; }
+.deployment-configuration-summary span { color: #8b94a7; font-size: 8px; }
+.deployment-configuration-summary b { color: #27344f; font-size: 13px; }
+.deployment-configuration-summary p { margin: 0; color: #778197; font-size: 8px; }
+.deployment-configuration-summary strong { color: #344054; font-size: 11px; }
+.deployment-configuration-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.deployment-configuration-list article { display: grid; grid-template-columns: 23px 1fr auto; gap: 8px; align-items: start; min-width: 0; padding: 11px; border: 1px solid #e2e6ed; border-radius: 7px; background: #fff; }
+.deployment-configuration-list article > i { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 6px; color: #667085; background: #f1f3f6; font-size: 9px; font-style: normal; font-weight: 700; }
+.deployment-configuration-list article.pass > i { color: #027a48; background: #ecfdf3; }
+.deployment-configuration-list article.warning > i { color: #8b6113; background: #fff7e8; }
+.deployment-configuration-list article.block > i { color: #b42318; background: #fff1f0; }
+.deployment-configuration-list article > div { display: grid; gap: 4px; min-width: 0; }
+.deployment-configuration-list article b { color: #344054; font-size: 9px; }
+.deployment-configuration-list article p { margin: 0; color: #6f798e; font-size: 8px; line-height: 1.45; }
+.deployment-configuration-list article code { overflow-wrap: anywhere; color: #5b56c8; background: transparent; font-size: 7px; }
+.deployment-configuration-list article small { color: #667085; font-size: 7px; line-height: 1.4; }
+.deployment-configuration-list article > em { padding: 4px 6px; border-radius: 4px; color: #667085; background: #f2f4f7; font-size: 7px; font-style: normal; white-space: nowrap; }
+.deployment-configuration-list article.pass > em { color: #027a48; background: #ecfdf3; }
+.deployment-configuration-list article.warning > em { color: #8b6113; background: #fff7e8; }
+.deployment-configuration-list article.block > em { color: #b42318; background: #fff1f0; }
+.deployment-configuration-boundary { margin: 11px 0 0; padding: 10px 12px; border-radius: 6px; color: #596579; background: #f5f6fa; font-size: 8px; line-height: 1.5; }
+@media (max-width: 720px) { .deployment-configuration-list { grid-template-columns: 1fr; } }
