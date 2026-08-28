@@ -4,7 +4,7 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.31`。团队成员可以维护自己的正式显示名称，管理员可以重命名当前工作区；变更会立即同步到导航、成员列表、审批签署与审计记录。平台同时具备真实浏览器验收、证据返工闭环、团队权限、GitHub 与 CI 同步、上线就绪中心、安全评审、审计与灾备、发布门禁、密钥轮换和精确回退。开发版本仅适合本地或受控试点；正式公网部署仍需稳定版、HTTPS 和一年内独立安全审查。
+> 当前版本：`0.4.0-dev.32`。新增工作区隔离的试点反馈中心：所有成员都能提交问题、建议和使用体验，管理员与审批人负责分级、排期、关闭和导出，新的反馈自动进入团队待办并写入审计链。平台同时具备真实浏览器验收、证据返工闭环、团队权限、GitHub 与 CI 同步、上线就绪中心、安全评审、审计与灾备、发布门禁、密钥轮换和精确回退。开发版本仅适合本地或受控试点；正式公网部署仍需稳定版、HTTPS 和一年内独立安全审查。
 
 ## 已实现
 
@@ -93,7 +93,7 @@ npm run check
 
 没有配置浏览器步骤的标准只执行基础环境检查；没有明确结果断言的路径仍会标记为“证据不足”。浏览器执行器限制同源跳转、单标准最多 20 步，并且不会执行任意脚本。
 
-路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，邮件通知见 [docs/EMAIL_NOTIFICATIONS.md](docs/EMAIL_NOTIFICATIONS.md)，团队待办见 [docs/TEAM_INBOX.md](docs/TEAM_INBOX.md)，首次验收启动包见 [docs/STARTER_KITS.md](docs/STARTER_KITS.md)，任务恢复见 [docs/RUN_RECOVERY.md](docs/RUN_RECOVERY.md)，成员邀请见 [docs/INVITATIONS.md](docs/INVITATIONS.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全整改闭环见 [docs/SECURITY_REMEDIATION.md](docs/SECURITY_REMEDIATION.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
+路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，试点反馈见 [docs/PILOT_FEEDBACK.md](docs/PILOT_FEEDBACK.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，邮件通知见 [docs/EMAIL_NOTIFICATIONS.md](docs/EMAIL_NOTIFICATIONS.md)，团队待办见 [docs/TEAM_INBOX.md](docs/TEAM_INBOX.md)，首次验收启动包见 [docs/STARTER_KITS.md](docs/STARTER_KITS.md)，任务恢复见 [docs/RUN_RECOVERY.md](docs/RUN_RECOVERY.md)，成员邀请见 [docs/INVITATIONS.md](docs/INVITATIONS.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全整改闭环见 [docs/SECURITY_REMEDIATION.md](docs/SECURITY_REMEDIATION.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

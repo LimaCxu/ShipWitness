@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.32
+
+- Added a workspace-scoped pilot feedback center for issues, suggestions, and usability observations.
+- Added project association, impact severity, manager-only lifecycle transitions, team-inbox routing, and JSON export.
+- Added audit-chain events and PostgreSQL migration coverage for feedback creation, triage, and export.
+
 ## 0.4.0-dev.31
 
 - Added authenticated personal display-name editing with immediate session and navigation refresh.

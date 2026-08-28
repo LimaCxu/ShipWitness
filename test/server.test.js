@@ -58,6 +58,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /account-settings-nav/);
   assert.match(frontendScriptText, /profileForm/);
   assert.match(frontendScriptText, /workspaceIdentityForm/);
+  assert.match(frontendScriptText, /feedbackPanel/);
+  assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
   assert.doesNotMatch(frontendScriptText, /\bconfirm\(|\bprompt\(|\balert\(/);
@@ -607,6 +609,44 @@ test('stale sending webhook delivery is reclaimed after an interrupted worker', 
   const delivery = (await store.read()).webhookDeliveries[0];
   assert.equal(delivery.status, 'delivered');
   assert.equal(delivery.attempts, 2);
+});
+
+test('pilot feedback is workspace-scoped, role-managed, auditable and exportable', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-feedback-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  const ownerSession = await ownerRequest(base, '/api/session'); const originalWorkspaceId = ownerSession.body.workspace.id;
+  const project = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '试点项目', repo: folder, url: `${base}/`, branch: 'main' }) });
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '试点成员', email: 'pilot@example.com', password: 'pilot-member-password', role: 'member' }) });
+  assert.equal(member.status, 201);
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'pilot@example.com', password: 'pilot-member-password' }) });
+  const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, '/api/account/password', { method: 'POST', body: JSON.stringify({ currentPassword: 'pilot-member-password', newPassword: 'pilot-member-password-new' }) })).status, 200);
+
+  const created = await memberRequest(base, '/api/feedback', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, kind: 'usability', severity: 'high', title: '第一次使用找不到反馈入口', description: '希望在顶部提供稳定入口，并能看到处理状态。' }) });
+  assert.equal(created.status, 201); assert.equal(created.body.status, 'new');
+  assert.equal((await memberRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) })).status, 403);
+  assert.equal((await memberRequest(base, '/api/feedback/export')).status, 403);
+
+  const inbox = await ownerRequest(base, '/api/inbox');
+  assert.ok(inbox.body.items.some(item => item.action.kind === 'feedback' && item.action.id === created.body.id));
+  const listed = await ownerRequest(base, '/api/feedback?status=new');
+  assert.equal(listed.body.length, 1); assert.equal(listed.body[0].reporter.name, '试点成员'); assert.equal(listed.body[0].project.name, '试点项目');
+  const updated = await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'planned', note: '纳入下个版本' }) });
+  assert.equal(updated.body.status, 'planned'); assert.equal(updated.body.timeline.at(-1).note, '纳入下个版本');
+  const exported = await ownerRequest(base, '/api/feedback/export');
+  assert.equal(exported.body.schema, 'shipwitness.pilot-feedback.v1'); assert.equal(exported.body.items.length, 1); assert.match(exported.headers.get('content-disposition'), /attachment/);
+
+  const secondWorkspace = await ownerRequest(base, '/api/workspaces', { method: 'POST', body: JSON.stringify({ name: '隔离试点' }) });
+  assert.equal(secondWorkspace.status, 201); assert.equal((await ownerRequest(base, '/api/feedback')).body.length, 0);
+  await ownerRequest(base, `/api/workspaces/${originalWorkspaceId}/select`, { method: 'POST' });
+  const audit = await ownerRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'feedback.created'));
+  assert.ok(audit.body.some(item => item.action === 'feedback.status_changed'));
+  assert.ok(audit.body.some(item => item.action === 'feedback.exported'));
 });
 
 test('readiness report is owner-only, conservative and never exposes configuration secrets', async t => {

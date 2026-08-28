@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.31';
+const serviceVersion = '0.4.0-dev.32';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -127,6 +127,9 @@ const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
   }
   if (role === 'owner') for (const delivery of data.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed')) {
     items.push({ key: `email:${delivery.id}:failed`, type: 'delivery', priority: 'normal', title: '邮件通知投递失败', detail: delivery.lastError || '邮件已用尽重试次数', createdAt: delivery.lastAttemptAt || delivery.createdAt, action: { kind: 'automation', id: delivery.id } });
+  }
+  if (['owner', 'approver'].includes(role)) for (const feedback of data.pilotFeedback.filter(item => item.workspaceId === workspaceId && item.status === 'new')) {
+    items.push({ key: `feedback:${feedback.id}:new`, type: 'feedback', priority: feedback.severity === 'blocker' ? 'high' : 'normal', title: '新的试点反馈等待分级', detail: `${projects.get(feedback.projectId)?.name || '未关联项目'} · ${feedback.title}`, createdAt: feedback.createdAt, action: { kind: 'feedback', id: feedback.id } });
   }
   const readKeys = new Set(data.inboxReads.filter(item => item.workspaceId === workspaceId && item.userId === userId).map(item => item.itemKey));
   return items.map(item => ({ ...item, unread: !readKeys.has(item.key) })).sort((a, b) => Number(b.priority === 'high') - Number(a.priority === 'high') || String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -1231,6 +1234,45 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '执行器发生内部错误'; current.failedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.failed', entityType: 'run', entityId: current.id, details: { failure: current.failure, attemptNumber: current.attemptNumber || 1 }, at: current.failedAt }); });
           throw error;
         }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/feedback') {
+        const input = await body(req); const kind = input.kind || 'issue'; const severity = input.severity || 'medium';
+        if (!['issue', 'suggestion', 'usability'].includes(kind)) return json(res, 400, { error: '反馈类型无效' });
+        if (!['low', 'medium', 'high', 'blocker'].includes(severity)) return json(res, 400, { error: '反馈级别无效' });
+        const projectId = String(input.projectId || '').trim() || null;
+        if (projectId && !authData.projects.some(item => item.id === projectId && item.workspaceId === workspaceId && !item.archivedAt)) return json(res, 400, { error: '关联项目不存在或已归档' });
+        const now = new Date().toISOString();
+        const feedback = await store.update(data => {
+          const value = { id: createId('fb'), workspaceId, projectId, reporterUserId: currentUser.id, kind, severity, title: required(input.title, '反馈标题', 200), description: required(input.description, '反馈说明', 5000), status: 'new', createdAt: now, updatedAt: now, timeline: [{ status: 'new', at: now, actorUserId: currentUser.id, note: '提交试点反馈' }] };
+          data.pilotFeedback.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.created', entityType: 'pilot_feedback', entityId: value.id, details: { projectId, kind, severity }, at: now }); return value;
+        });
+        return json(res, 201, feedback);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/feedback') {
+        const status = url.searchParams.get('status'); const projectId = url.searchParams.get('projectId');
+        if (status && !['new', 'triaged', 'planned', 'resolved', 'declined'].includes(status)) return json(res, 400, { error: '反馈状态无效' });
+        const data = await store.read();
+        const items = data.pilotFeedback.filter(item => item.workspaceId === workspaceId && (!status || item.status === status) && (!projectId || item.projectId === projectId)).map(item => ({ ...item, reporter: publicUser(data.users.find(user => user.id === item.reporterUserId)), project: item.projectId ? data.projects.find(project => project.id === item.projectId && project.workspaceId === workspaceId) ? { id: item.projectId, name: data.projects.find(project => project.id === item.projectId).name } : null : null }));
+        return json(res, 200, items);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/feedback/export') {
+        requireRole(['owner', 'approver']); const data = await store.read(); const now = new Date().toISOString();
+        const items = data.pilotFeedback.filter(item => item.workspaceId === workspaceId);
+        const document = { schema: 'shipwitness.pilot-feedback.v1', workspace: { id: currentWorkspace.id, name: currentWorkspace.name }, exportedAt: now, items };
+        await store.update(current => appendAudit(current, { workspaceId, actorUserId: currentUser.id, action: 'feedback.exported', entityType: 'workspace', entityId: workspaceId, details: { count: items.length }, at: now }));
+        return json(res, 200, document, { 'content-disposition': `attachment; filename="shipwitness-feedback-${now.slice(0, 10)}.json"` });
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'feedback' && segments[2] && segments.length === 3) {
+        requireRole(['owner', 'approver']); const input = await body(req); const allowed = ['new', 'triaged', 'planned', 'resolved', 'declined'];
+        if (!allowed.includes(input.status)) return json(res, 400, { error: '反馈状态无效' });
+        const feedback = await store.update(data => {
+          const current = data.pilotFeedback.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!current) throw Object.assign(new Error('试点反馈不存在'), { status: 404 });
+          if (current.status === input.status) return current;
+          const from = current.status; current.status = input.status; current.updatedAt = new Date().toISOString(); current.timeline ||= []; current.timeline.push({ status: input.status, at: current.updatedAt, actorUserId: currentUser.id, note: String(input.note || '').slice(0, 1000) });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.status_changed', entityType: 'pilot_feedback', entityId: current.id, details: { from, to: input.status, note: String(input.note || '').slice(0, 1000) }, at: current.updatedAt }); return current;
+        });
+        return json(res, 200, feedback);
       }
       if (req.method === 'POST' && url.pathname === '/api/issues') {
         const input = await body(req);
