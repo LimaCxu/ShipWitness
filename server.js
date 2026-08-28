@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.25';
+const serviceVersion = '0.4.0-dev.26';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -243,6 +243,13 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
+const securityReviewSnapshot = (data, review, workspaceId, asOf = new Date()) => {
+  const findings = data.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === review.id).sort((a, b) => a.id.localeCompare(b.id)).map(item => ({ id: item.id, severity: item.severity, title: item.title, description: item.description, remediation: item.remediation, status: item.status, retestEvidence: item.retestEvidence || null, verifiedAt: item.verifiedAt || null, riskAcceptance: item.riskAcceptance ? { rationale: item.riskAcceptance.rationale, acceptedAt: item.riskAcceptance.acceptedAt, expiresAt: item.riskAcceptance.expiresAt } : null, updatedAt: item.updatedAt }));
+  const sourceUpdatedAt = [review.createdAt, ...findings.map(item => item.updatedAt)].sort().at(-1);
+  const activeRiskAcceptance = item => item.status === 'risk_accepted' && new Date(item.riskAcceptance?.expiresAt) > asOf;
+  return { review: { id: review.id, provider: review.provider, reference: review.reference, reviewedAt: review.reviewedAt, scope: review.scope, summary: review.summary }, findings, summary: { total: findings.length, critical: findings.filter(item => item.severity === 'critical').length, high: findings.filter(item => item.severity === 'high').length, medium: findings.filter(item => item.severity === 'medium').length, low: findings.filter(item => item.severity === 'low').length, verified: findings.filter(item => item.status === 'verified').length, riskAccepted: findings.filter(activeRiskAcceptance).length, expiredRiskAcceptances: findings.filter(item => item.status === 'risk_accepted' && !activeRiskAcceptance(item)).length, unresolved: findings.filter(item => item.status !== 'verified' && !activeRiskAcceptance(item)).length }, sourceUpdatedAt };
+};
+
 export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
@@ -444,7 +451,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (apiKey) {
         const acceptanceRead = versionedApi && req.method === 'GET' && ['/api/projects', '/api/runs', '/api/issues'].some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)) && apiKey.scopes.includes('acceptance:read');
         const acceptanceWrite = versionedApi && req.method === 'POST' && (url.pathname === '/api/runs' || /^\/api\/runs\/[^/]+\/(execute|retry)$/.test(url.pathname)) && apiKey.scopes.includes('acceptance:write');
-        const allowed = acceptanceRead || acceptanceWrite || (req.method === 'GET' && ((url.pathname.startsWith('/api/gates/') && apiKey.scopes.includes('gate:read')) || (url.pathname.startsWith('/api/dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/signed-dossiers/') && apiKey.scopes.includes('dossier:read'))));
+        const allowed = acceptanceRead || acceptanceWrite || (req.method === 'GET' && ((url.pathname.startsWith('/api/gates/') && apiKey.scopes.includes('gate:read')) || (url.pathname.startsWith('/api/dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/signed-dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/security-review-dossiers/') && apiKey.scopes.includes('dossier:read'))));
         if (!allowed) return json(res, 403, { error: 'API Key 作用域不足' });
         await store.update(data => { const key = data.apiKeys.find(item => item.id === apiKey.id); if (key) key.lastUsedAt = new Date().toISOString(); });
       }
@@ -617,7 +624,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/security/reviews') {
         requireRole(['owner', 'approver']);
         const reviews = authData.securityReviews.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt));
-        return json(res, 200, reviews.map(review => ({ ...review, findings: authData.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === review.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) })));
+        return json(res, 200, reviews.map(review => { const findings = authData.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === review.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)); const sourceUpdatedAt = [review.createdAt, ...findings.map(item => item.updatedAt)].sort().at(-1); const dossier = authData.signedSecurityReviews.filter(item => item.workspaceId === workspaceId && item.reviewId === review.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]; return { ...review, findings, dossier: dossier ? { id: dossier.id, createdAt: dossier.createdAt, sourceUpdatedAt: dossier.payload.sourceUpdatedAt, current: dossier.payload.sourceUpdatedAt === sourceUpdatedAt } : null }; }));
       }
       if (req.method === 'POST' && url.pathname === '/api/security/reviews') {
         requireRole(['owner']); const input = await body(req); const reviewedAt = new Date(input.reviewedAt); const now = new Date();
@@ -633,6 +640,20 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.securityFindings.unshift(...findings); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'security.review_recorded', entityType: 'security_review', entityId: review.id, details: { provider: review.provider, reference: review.reference, reviewedAt: review.reviewedAt, findings: findings.length }, at }); return { ...review, findings };
         });
         return json(res, 201, created);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'security' && segments[2] === 'reviews' && segments[3] && segments[4] === 'sign') {
+        requireRole(['owner', 'approver']);
+        const signed = await store.update(data => {
+          const review = data.securityReviews.find(item => item.id === segments[3] && item.workspaceId === workspaceId); if (!review) throw Object.assign(new Error('安全评审不存在'), { status: 404 });
+          const workspace = data.workspaces.find(item => item.id === workspaceId); workspace.signingKey ||= createSigningKey(signingSecret); const at = new Date().toISOString();
+          const snapshot = securityReviewSnapshot(data, review, workspaceId, new Date(at)); const payload = { schema: 'shipwitness.security-review.v1', workspace: { id: workspace.id, name: workspace.name }, ...snapshot, signedAt: at };
+          const document = { id: createId('ssr'), schema: 'shipwitness.signed-security-review.v1', workspaceId, reviewId: review.id, payload, signature: signPayload(payload, workspace.signingKey, signingSecret), createdByUserId: currentUser.id, createdAt: at };
+          data.signedSecurityReviews.unshift(document); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'security.review_signed', entityType: 'signed_security_review', entityId: document.id, details: { reviewId: review.id, reference: review.reference, findings: snapshot.summary.total, unresolved: snapshot.summary.unresolved }, at }); return document;
+        });
+        return json(res, 201, { ...signed, valid: verifySignedPayload(signed.payload, signed.signature) });
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'security-review-dossiers' && segments[2]) {
+        const document = authData.signedSecurityReviews.find(item => item.id === segments[2] && item.workspaceId === workspaceId); return document ? json(res, 200, { ...document, valid: verifySignedPayload(document.payload, document.signature) }) : json(res, 404, { error: '安全整改证据包不存在' });
       }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'security' && segments[2] === 'findings' && segments[3]) {
         requireRole(['owner', 'approver']); const input = await body(req); const allowed = ['open', 'remediating', 'fixed_pending_retest', 'verified', 'risk_accepted'];
@@ -661,6 +682,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const effectiveReviewReference = recordedReview?.reference || securityReviewReference; const effectiveReviewedAt = recordedReview?.reviewedAt || securityReviewedAt;
         const reviewTime = effectiveReviewedAt ? new Date(effectiveReviewedAt) : null; const reviewAgeDays = reviewTime ? (now.getTime() - reviewTime.getTime()) / 86_400_000 : null; const securityReviewFresh = Boolean(effectiveReviewReference && Number.isFinite(reviewAgeDays) && reviewAgeDays >= -0.1 && reviewAgeDays <= 365);
         const reviewFindings = recordedReview ? authData.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === recordedReview.id) : [];
+        const reviewSourceUpdatedAt = recordedReview ? [recordedReview.createdAt, ...reviewFindings.map(item => item.updatedAt)].sort().at(-1) : null; const signedSecurityReview = recordedReview ? authData.signedSecurityReviews.filter(item => item.workspaceId === workspaceId && item.reviewId === recordedReview.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] : null; const signedSecurityReviewCurrent = Boolean(signedSecurityReview && signedSecurityReview.payload.sourceUpdatedAt === reviewSourceUpdatedAt && verifySignedPayload(signedSecurityReview.payload, signedSecurityReview.signature));
         const activeFinding = item => item.status !== 'verified' && !(item.status === 'risk_accepted' && new Date(item.riskAcceptance?.expiresAt) > now);
         const blockingSecurityFindings = reviewFindings.filter(item => ['critical', 'high'].includes(item.severity) && activeFinding(item)); const acceptedBlockingFindings = reviewFindings.filter(item => ['critical', 'high'].includes(item.severity) && item.status === 'risk_accepted' && !activeFinding(item)); const advisorySecurityFindings = reviewFindings.filter(item => ['medium', 'low'].includes(item.severity) && activeFinding(item));
         const releaseSupport = releaseSupportStatus({ version, releasedAt, endOfSupportAt, now });
@@ -675,6 +697,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
           { id: 'security_review', category: '访问安全', label: '一年内外部安全评审', status: securityReviewFresh ? 'pass' : 'warning', detail: securityReviewFresh ? `独立安全评审距今 ${reviewAgeDays.toFixed(0)} 天，参考编号已登记。` : effectiveReviewReference ? '已登记评审参考，但评审日期缺失、无效或超过一年。' : '尚未登记独立安全评审结果。', action: securityReviewFresh ? null : '在安全评审中心登记报告与完成日期，或配置对应部署证据' },
           { id: 'security_findings', category: '访问安全', label: '安全发现整改', status: blockingSecurityFindings.length ? 'block' : acceptedBlockingFindings.length || advisorySecurityFindings.length ? 'warning' : 'pass', detail: blockingSecurityFindings.length ? `${blockingSecurityFindings.length} 个严重或高危发现尚未通过复测。` : acceptedBlockingFindings.length || advisorySecurityFindings.length ? `${acceptedBlockingFindings.length} 个严重风险临时接受，${advisorySecurityFindings.length} 个中低风险待处理。` : recordedReview ? `${reviewFindings.length} 个发现均已关闭或评审未发现问题。` : '尚无结构化安全发现；登记评审后系统会跟踪整改与复测。', action: blockingSecurityFindings.length ? '修复严重和高危发现并登记复测证据' : acceptedBlockingFindings.length || advisorySecurityFindings.length ? '在风险接受到期前完成修复，并处理剩余中低风险' : null },
+          { id: 'security_evidence', category: '证据治理', label: '签名安全整改证据包', status: !recordedReview || signedSecurityReviewCurrent ? 'pass' : 'warning', detail: !recordedReview ? '当前使用部署侧评审元数据；结构化登记后可生成签名证据包。' : signedSecurityReviewCurrent ? `当前评审状态已签名封存，证据包 ${signedSecurityReview.id}。` : signedSecurityReview ? '发现项状态在最近签署后发生变化，需要重新生成证据包。' : '当前安全评审尚未生成可离线验证的签名证据包。', action: recordedReview && !signedSecurityReviewCurrent ? '在安全评审中心重新生成签名证据包' : null },
           { id: 'support_lifecycle', category: '版本治理', label: '版本支持周期', status: releaseSupport.status === 'supported' ? 'pass' : releaseSupport.channel === 'stable' ? 'block' : 'warning', detail: releaseSupport.reason, action: releaseSupport.status === 'supported' ? null : releaseSupport.channel === 'stable' ? '升级到仍在支持周期内的稳定版本' : '正式公网发布前升级到带发布日期和停止支持日期的 1.x 稳定版本' },
           { id: 'email', category: '通知送达', label: '邮件通知', status: emailEnabled && emailFailures === 0 ? 'pass' : 'warning', detail: !emailEnabled ? 'SMTP 未启用，邀请、失败和审批需要成员主动查看。' : emailFailures ? `${emailFailures} 封邮件最终投递失败。` : 'SMTP 已启用且没有最终失败投递。', action: !emailEnabled ? '配置 TLS SMTP 并发送测试邮件' : emailFailures ? '处理失败邮件并重试' : null },
           { id: 'github_webhook', category: '代码证据', label: 'GitHub 自动同步', status: !githubProjects || githubWebhookSecret ? 'pass' : 'warning', detail: !githubProjects ? '当前没有项目启用 GitHub 集成。' : githubWebhookSecret ? `${githubProjects} 个 GitHub 项目已启用签名事件接收。` : `${githubProjects} 个 GitHub 项目仍依赖人工同步。`, action: githubProjects && !githubWebhookSecret ? '配置 SHIPWITNESS_GITHUB_WEBHOOK_SECRET 并在仓库订阅事件' : null },

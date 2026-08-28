@@ -51,6 +51,8 @@
 .security-review-list header b { font-size: 10px; }
 .security-review-list header small,.security-review-list > article > p,.security-review-list > p { margin: 0; color: #7b8498; font-size: 8px; line-height: 1.55; }
 .security-review-list header em { color: #59647a; font-size: 8px; font-style: normal; }
+.security-review-actions { display: flex !important; flex-direction: row; gap: 5px !important; margin-left: auto; }
+.security-review-actions button { padding: 5px 7px; border: 1px solid #cfd6e3; border-radius: 5px; color: #4058bf; background: #fff; font-size: 7px; cursor: pointer; }
 .security-review-list > article > p { margin: 8px 0; }
 .security-review-list > article > div { display: grid; gap: 5px; }
 .security-review-list section { display: grid; grid-template-columns: 38px minmax(0,1fr) auto auto auto; gap: 6px; align-items: center; padding: 8px; border-left: 3px solid #d09a37; background: #fafbfc; }

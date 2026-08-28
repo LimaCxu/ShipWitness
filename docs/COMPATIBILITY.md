@@ -8,7 +8,7 @@ This document defines the promises made by development releases and the stricter
 - JSON storage is for local evaluation and migration only; production durability requires PostgreSQL.
 - Numbered database migrations are forward-only. Never run an older image against a newer schema.
 - A rollback restores the exact image and its matching database/evidence backup together.
-- `shipwitness.dossier.v1`, `shipwitness.dossier.v2`, `shipwitness.signed-dossier.v1`, `shipwitness.handoff.v1`, `shipwitness.webhook.v1`, `shipwitness.backup.v1`, and `shipwitness.release.v1` are versioned formats. Readers must reject unsupported schema identifiers.
+- `shipwitness.dossier.v1`, `shipwitness.dossier.v2`, `shipwitness.signed-dossier.v1`, `shipwitness.security-review.v1`, `shipwitness.signed-security-review.v1`, `shipwitness.handoff.v1`, `shipwitness.webhook.v1`, `shipwitness.backup.v1`, and `shipwitness.release.v1` are versioned formats. Readers must reject unsupported schema identifiers.
 - CLI exit codes are stable: release gate `0` pass, `1` blocked, `2` operational error; dossier verification `0` valid, `1` invalid, `2` usage/error.
 - Development releases may add fields. Consumers must ignore unknown fields but must not infer success from absent required fields.
 

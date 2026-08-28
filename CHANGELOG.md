@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.26
+
+- Added immutable Ed25519-signed security-review remediation dossiers with workspace, review, finding, retest, and risk-acceptance snapshots.
+- Added download and offline verification tooling plus `dossier:read` machine access to signed security evidence.
+- Added readiness freshness detection so finding changes after signing require a new evidence package.
+
 ## 0.4.0-dev.25
 
 - Added a workspace security-review center for independent report metadata and structured findings.
