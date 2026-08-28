@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.30
+
+- Replaced native browser confirmations for invitations, members, API keys, webhooks, and retention cleanup with one consistent high-impact action dialog.
+- Added operation-specific consequences and object names so operators know exactly what will change before confirming.
+- Required an exact confirmation phrase before irreversible retention cleanup while preserving audit and evidence records.
+
 ## 0.4.0-dev.29
 
 - Reorganized the workspace drawer into Team, Release Gate, Integrations, and Governance navigation instead of one long settings page.
