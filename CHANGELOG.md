@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.31
+
+- Added authenticated personal display-name editing with immediate session and navigation refresh.
+- Added owner-only current-workspace renaming with tenant-bound authorization.
+- Added hash-chain audit events for profile and workspace identity changes.
+- Added a dedicated identity section to the role-aware team settings experience.
+
 ## 0.4.0-dev.30
 
 - Replaced native browser confirmations for invitations, members, API keys, webhooks, and retention cleanup with one consistent high-impact action dialog.

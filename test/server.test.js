@@ -56,6 +56,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /runProject\.value = backendProject\.name/);
   assert.match(frontendScriptText, /securityFindingDialog/);
   assert.match(frontendScriptText, /account-settings-nav/);
+  assert.match(frontendScriptText, /profileForm/);
+  assert.match(frontendScriptText, /workspaceIdentityForm/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
   assert.doesNotMatch(frontendScriptText, /\bconfirm\(|\bprompt\(|\balert\(/);
@@ -713,6 +715,16 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   const session = await authRequest(base, '/api/session');
   const originalWorkspaceId = session.body.workspace.id;
 
+  const renamedWorkspace = await authRequest(base, `/api/workspaces/${originalWorkspaceId}`, { method: 'PATCH', body: JSON.stringify({ name: '正式验收工作区' }) });
+  assert.equal(renamedWorkspace.status, 200);
+  assert.equal(renamedWorkspace.body.name, '正式验收工作区');
+  const updatedProfile = await authRequest(base, '/api/account/profile', { method: 'PATCH', body: JSON.stringify({ name: '验收负责人' }) });
+  assert.equal(updatedProfile.status, 200);
+  assert.equal(updatedProfile.body.name, '验收负责人');
+  const identitySession = await authRequest(base, '/api/session');
+  assert.equal(identitySession.body.workspace.name, '正式验收工作区');
+  assert.equal(identitySession.body.user.name, '验收负责人');
+
   const project = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '仅工作区一可见', repo: folder, url: `${base}/`, branch: 'main' }) });
   assert.equal(project.status, 201);
 
@@ -741,6 +753,8 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   const memberCookie = login.headers.get('set-cookie').split(';')[0];
   const forbidden = await authenticatedRequest(memberCookie)(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '越权用户', email: 'forbidden@example.com', password: 'forbidden-password', role: 'member' }) });
   assert.equal(forbidden.status, 403);
+  const forbiddenRename = await authenticatedRequest(memberCookie)(base, `/api/workspaces/${originalWorkspaceId}`, { method: 'PATCH', body: JSON.stringify({ name: '越权改名' }) });
+  assert.equal(forbiddenRename.status, 403);
   const forbiddenDecision = await authenticatedRequest(memberCookie)(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: 'run_unknown', owner: '普通成员', verdict: 'pass' }) });
   assert.equal(forbiddenDecision.status, 403);
 
@@ -831,6 +845,8 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
 
   const auditAfterLifecycle = await authRequest(base, '/api/audit');
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.role_changed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'workspace.renamed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.profile_updated'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.password_changed'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.password_reset'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.opened'));

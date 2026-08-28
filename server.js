@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.30';
+const serviceVersion = '0.4.0-dev.31';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -482,6 +482,18 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       const requireRole = roles => {
         if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
       };
+      if (req.method === 'PATCH' && url.pathname === '/api/account/profile') {
+        if (!session) return json(res, 403, { error: 'API Key 不能修改用户资料' });
+        const input = await body(req); const name = required(input.name, '姓名', 100); const now = new Date().toISOString();
+        const user = await store.update(data => {
+          const current = data.users.find(item => item.id === currentUser.id);
+          if (current.name === name) return current;
+          const previousName = current.name; current.name = name; current.updatedAt = now;
+          for (const joined of data.memberships.filter(item => item.userId === current.id)) appendAudit(data, { workspaceId: joined.workspaceId, actorUserId: current.id, action: 'user.profile_updated', entityType: 'user', entityId: current.id, details: { previousName, name }, at: now });
+          return current;
+        });
+        return json(res, 200, publicUser(user));
+      }
       if (req.method === 'GET' && url.pathname === '/api/inbox') {
         const items = buildInbox(authData, workspaceId, currentUser.id, membership.role);
         return json(res, 200, { items, unreadCount: items.filter(item => item.unread).length, total: items.length });
@@ -510,6 +522,20 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return value;
         });
         return json(res, 201, workspace);
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments.length === 3) {
+        requireRole(['owner']);
+        if (segments[2] !== workspaceId) return json(res, 404, { error: '工作区不存在' });
+        const input = await body(req); const name = required(input.name, '工作区名称', 120); const now = new Date().toISOString();
+        const workspace = await store.update(data => {
+          const current = data.workspaces.find(item => item.id === workspaceId);
+          if (!current) throw Object.assign(new Error('工作区不存在'), { status: 404 });
+          if (current.name === name) return current;
+          const previousName = current.name; current.name = name; current.updatedAt = now;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'workspace.renamed', entityType: 'workspace', entityId: current.id, details: { previousName, name }, at: now });
+          return current;
+        });
+        return json(res, 200, workspace);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments[3] === 'select') {
         const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2]);
