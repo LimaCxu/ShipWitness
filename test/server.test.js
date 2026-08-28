@@ -65,6 +65,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /data-revoke-session/);
   assert.match(frontendScriptText, /mfaDialog/);
   assert.match(frontendScriptText, /api\/login\/mfa/);
+  assert.match(frontendScriptText, /forgotPassword/);
+  assert.match(frontendScriptText, /password-reset\/request/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -487,6 +489,22 @@ test('email queue encrypts invitation links and delivers invitation and approval
   failEmail = false; assert.equal((await authRequest(base, `/api/email-deliveries/${failed.id}/retry`, { method: 'POST' })).status, 202);
   await server.processEmailDeliveries();
   assert.equal((await authRequest(base, '/api/email-deliveries')).body.find(item => item.id === failed.id).status, 'delivered');
+
+  const genericMissing = await request(base, '/api/password-reset/request', { method: 'POST', body: JSON.stringify({ email: 'missing@example.com' }) });
+  assert.equal(genericMissing.status, 202); const deliveriesBeforeReset = (await new JsonStore(storeFile).read()).emailDeliveries.length;
+  const resetRequested = await request(base, '/api/password-reset/request', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com' }) });
+  assert.equal(resetRequested.status, 202); assert.equal(resetRequested.body.message, genericMissing.body.message);
+  assert.equal((await new JsonStore(storeFile).read()).emailDeliveries.length, deliveriesBeforeReset + 1);
+  await server.processEmailDeliveries(); const resetMessage = sent.findLast(message => message.subject.includes('重置'));
+  const resetToken = decodeURIComponent(resetMessage.text.match(/\?reset=([^\s]+)/)[1]);
+  const resetDetails = await request(base, `/api/password-reset/${resetToken}`); assert.equal(resetDetails.status, 200); assert.match(resetDetails.body.maskedEmail, /@example\.com$/);
+  const resetDone = await request(base, `/api/password-reset/${resetToken}`, { method: 'POST', body: JSON.stringify({ newPassword: 'reset-password-456' }) });
+  assert.equal(resetDone.status, 200); assert.ok(resetDone.body.sessionsRevoked >= 1); assert.equal((await authRequest(base, '/api/session')).status, 401);
+  assert.equal((await request(base, `/api/password-reset/${resetToken}`)).status, 410);
+  assert.equal((await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'correct-horse-battery' }) })).status, 401);
+  const resetLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'reset-password-456' }) }); assert.equal(resetLogin.status, 200);
+  const resetAudit = await authenticatedRequest(resetLogin.headers.get('set-cookie').split(';')[0])(base, '/api/audit');
+  assert.ok(resetAudit.body.some(item => item.action === 'user.password_reset_requested')); assert.ok(resetAudit.body.some(item => item.action === 'user.password_reset_completed'));
 });
 
 test('run execution is claimed atomically and rejects a concurrent duplicate', async t => {

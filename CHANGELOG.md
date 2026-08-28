@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.38
+
+- Added non-enumerating email password-reset requests with throttled, single-use, 30-minute tokens and encrypted delivery payloads.
+- Added a login-page recovery flow, token inspection, password confirmation, replay prevention, and complete session/challenge revocation.
+- Preserved TOTP configuration after password recovery so the reset link cannot bypass the existing second factor; added audit and PostgreSQL migration coverage.
+
 ## 0.4.0-dev.37
 
 - Added encrypted TOTP two-step verification with five-minute, attempt-limited login challenges and one-time recovery codes.

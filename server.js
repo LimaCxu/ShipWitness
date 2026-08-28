@@ -26,7 +26,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.37';
+const serviceVersion = '0.4.0-dev.38';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -367,6 +367,37 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/setup/status') {
         const data = await store.read();
         return json(res, 200, { needsSetup: !data.users.length });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/password-reset/request') {
+        const input = await body(req); const email = normalizedEmail(input.email); const generic = { accepted: true, message: '如果该邮箱存在且邮件服务可用，重置链接会在几分钟内发送。' };
+        if (!emailEnabled || !publicUrl) return json(res, 202, generic);
+        const snapshot = await store.read(); const user = snapshot.users.find(item => item.email === email); if (!user) return json(res, 202, generic);
+        const membership = snapshot.memberships.find(item => item.userId === user.id); if (!membership) return json(res, 202, generic);
+        const recent = snapshot.passwordResets.find(item => item.userId === user.id && !item.usedAt && !item.revokedAt && new Date(item.expiresAt) > new Date() && Date.now() - new Date(item.createdAt).getTime() < 60_000); if (recent) return json(res, 202, generic);
+        const token = createSessionToken(); const now = new Date();
+        await store.update(data => {
+          for (const item of data.passwordResets.filter(item => item.userId === user.id && !item.usedAt && !item.revokedAt)) item.revokedAt = now.toISOString();
+          const reset = { id: createId('pwr'), userId: user.id, tokenHash: sessionTokenHash(token), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(), createdAt: now.toISOString(), requestedIp: String(req.socket.remoteAddress || '').slice(0, 100) || null };
+          data.passwordResets.unshift(reset); const resetUrl = `${publicUrl}/?reset=${encodeURIComponent(token)}`;
+          queueEmail(data, { workspaceId: membership.workspaceId, to: user.email, kind: 'password_reset', entityId: reset.id, subject: '重置你的 ShipWitness 密码', text: `请在 ${reset.expiresAt} 前打开以下一次性链接重置密码：${resetUrl}\n如果不是你发起的，请忽略本邮件。`, html: `<p>请在 ${htmlEscape(reset.expiresAt)} 前重置你的 ShipWitness 密码。</p><p><a href="${htmlEscape(resetUrl)}">重置密码</a></p><p>链接只能使用一次。如果不是你发起的，请忽略本邮件。</p>` });
+          for (const joined of data.memberships.filter(item => item.userId === user.id)) appendAudit(data, { workspaceId: joined.workspaceId, actorUserId: user.id, action: 'user.password_reset_requested', entityType: 'password_reset', entityId: reset.id, details: { emailQueued: true }, at: reset.createdAt });
+        });
+        return json(res, 202, generic);
+      }
+      if (segments[0] === 'api' && segments[1] === 'password-reset' && segments[2] && segments.length === 3 && ['GET', 'POST'].includes(req.method)) {
+        if (segments[2].length > 200) return json(res, 410, { error: '密码重置链接无效或已过期' });
+        const tokenHash = sessionTokenHash(segments[2]); const snapshot = await store.read(); const reset = snapshot.passwordResets.find(item => item.tokenHash === tokenHash);
+        if (!reset || reset.usedAt || reset.revokedAt || new Date(reset.expiresAt) <= new Date()) return json(res, 410, { error: '密码重置链接无效或已过期' });
+        const user = snapshot.users.find(item => item.id === reset.userId); if (!user) return json(res, 410, { error: '密码重置链接无效或已过期' });
+        if (req.method === 'GET') return json(res, 200, { maskedEmail: maskedEmail(user.email), expiresAt: reset.expiresAt, mfaEnabled: Boolean(user.mfaSecretEncrypted) });
+        const input = await body(req); const passwordHash = await hashPassword(input.newPassword); const changed = await store.update(data => {
+          const current = data.passwordResets.find(item => item.id === reset.id && item.tokenHash === tokenHash); if (!current || current.usedAt || current.revokedAt || new Date(current.expiresAt) <= new Date()) throw Object.assign(new Error('密码重置链接无效或已过期'), { status: 410 });
+          const account = data.users.find(item => item.id === current.userId); const at = new Date().toISOString(); account.passwordHash = passwordHash; account.passwordChangedAt = at; account.mustChangePassword = false; current.usedAt = at;
+          for (const item of data.passwordResets.filter(item => item.userId === account.id && item.id !== current.id && !item.usedAt && !item.revokedAt)) item.revokedAt = at;
+          const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== account.id); data.mfaChallenges = data.mfaChallenges.filter(item => item.userId !== account.id); const sessionsRevoked = before - data.sessions.length;
+          for (const joined of data.memberships.filter(item => item.userId === account.id)) appendAudit(data, { workspaceId: joined.workspaceId, actorUserId: account.id, action: 'user.password_reset_completed', entityType: 'user', entityId: account.id, details: { sessionsRevoked, mfaPreserved: Boolean(account.mfaSecretEncrypted) }, at }); return { passwordChangedAt: at, sessionsRevoked, mfaPreserved: Boolean(account.mfaSecretEncrypted) };
+        });
+        return json(res, 200, changed, { 'set-cookie': clearSessionCookie(secureCookie) });
       }
       if (req.method === 'POST' && url.pathname === '/api/integrations/github/webhook') {
         const raw = await rawBody(req, 2_000_000); verifyGitHubWebhook({ raw, signature: req.headers['x-hub-signature-256'], secret: githubWebhookSecret });

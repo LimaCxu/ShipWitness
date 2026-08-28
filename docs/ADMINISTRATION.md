@@ -1,5 +1,11 @@
 # Workspace administration
 
+## Password recovery
+
+The login page exposes **忘记密码** when setup is complete. A request always returns the same accepted response whether or not the email exists, so the endpoint does not disclose account membership. Delivery requires both SMTP and `SHIPWITNESS_PUBLIC_URL`; otherwise the response remains generic and an owner must use the governed member-reset process.
+
+Each email link is random, stored only as a SHA-256 hash, valid for 30 minutes, and usable once. A newer request revokes older pending links. Completing recovery changes the password, revokes every session and pending MFA challenge for the account, and writes audit events in each joined workspace. Existing TOTP configuration and unused recovery codes remain active, so the next login still requires the second factor.
+
 ## Two-step verification
 
 Members can enable TOTP two-step verification under **工作区设置 → 团队 → 账户安全**. Enrollment requires the current password and one valid six-digit code from a standard authenticator. ShipWitness displays ten recovery codes once; each code can complete one login and is removed immediately after use.
