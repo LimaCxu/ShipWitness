@@ -32,6 +32,7 @@
 - [x] Explicit GitHub commit and CI synchronization with immutable run binding and release-gate enforcement
 - [x] Signed GitHub push and CI webhooks with replay protection, automatic synchronization, event history, and retry
 - [x] Workspace-scoped pilot feedback intake, triage, team-inbox routing, audit, and export
+- [x] User-scoped login-device management and encrypted TOTP two-step verification with one-time recovery codes
 
 ## 1.0 — Self-hosted release gate
 

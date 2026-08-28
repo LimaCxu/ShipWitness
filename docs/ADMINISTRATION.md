@@ -1,5 +1,13 @@
 # Workspace administration
 
+## Two-step verification
+
+Members can enable TOTP two-step verification under **工作区设置 → 团队 → 账户安全**. Enrollment requires the current password and one valid six-digit code from a standard authenticator. ShipWitness displays ten recovery codes once; each code can complete one login and is removed immediately after use.
+
+After enrollment, a correct password creates only a five-minute verification challenge, not a session. The challenge accepts at most five failed codes. Existing protected accounts must also complete the second factor before accepting a new workspace invitation. Enabling or disabling two-step verification revokes every other session and appends an audit event.
+
+TOTP secrets are AES-256-GCM encrypted with `SHIPWITNESS_MASTER_KEY`. Master-key rotation re-encrypts active and pending TOTP secrets together with signing keys, webhook secrets, and queued email content. Losing both the authenticator and all recovery codes intentionally prevents password-only access; operators must restore access through an independently governed recovery procedure rather than bypassing the second factor.
+
 ## Login devices and sessions
 
 Every member can view their own active login devices under **工作区设置 → 团队 → 账户安全**. The list never exposes another member's sessions. It shows a safe browser/platform summary plus login and expiry times.

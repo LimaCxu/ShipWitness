@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.37
+
+- Added encrypted TOTP two-step verification with five-minute, attempt-limited login challenges and one-time recovery codes.
+- Required a second factor when an existing protected account accepts a new workspace invitation, preventing invitation-based session bypass.
+- Added self-service enrollment and disable flows, recovery-code handoff, other-session revocation, audit events, PostgreSQL migration, and master-key rotation coverage.
+
 ## 0.4.0-dev.36
 
 - Added a self-service login-device list with safe browser/platform summaries, login and expiry times, and current-session identification.

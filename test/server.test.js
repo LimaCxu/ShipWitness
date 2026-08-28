@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { createApp } from '../server.js';
 import { encryptSecret } from '../lib/signing.js';
 import { JsonStore } from '../lib/store.js';
 import { smtpConfig } from '../lib/email.js';
+import { totpCode } from '../lib/mfa.js';
 
 const signingSecret = Buffer.alloc(32, 7).toString('base64');
 
@@ -62,6 +63,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /feedbackActionDialog/);
   assert.match(frontendScriptText, /session-management/);
   assert.match(frontendScriptText, /data-revoke-session/);
+  assert.match(frontendScriptText, /mfaDialog/);
+  assert.match(frontendScriptText, /api\/login\/mfa/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -699,6 +702,7 @@ test('readiness report is owner-only, conservative and never exposes configurati
   assert.equal(report.body.checks.find(item => item.id === 'postgres').status, 'block');
   assert.equal(report.body.checks.find(item => item.id === 'https').status, 'block');
   assert.equal(report.body.checks.find(item => item.id === 'master_key').status, 'block');
+  assert.equal(report.body.checks.find(item => item.id === 'privileged_mfa').status, 'warning');
   assert.equal(report.body.checks.find(item => item.id === 'support_lifecycle').status, 'warning');
   assert.match(report.body.checks.find(item => item.id === 'audit').detail, /^1 条审计事件哈希链完整。$/);
   assert.equal(JSON.stringify(report.body).includes(invalidSecret), false);
@@ -732,6 +736,7 @@ test('readiness report recognizes a fully configured production candidate', asyn
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
   const cookie = await setupOwner(base);
+  await store.update(data => { data.users[0].mfaSecretEncrypted = 'readiness-evidence-present'; });
 
   const report = await authenticatedRequest(cookie)(base, '/api/readiness');
   assert.equal(report.status, 200);
@@ -770,6 +775,41 @@ test('security review findings block release until retested or explicitly time-b
   const reviews = await ownerRequest(base, '/api/security/reviews'); assert.equal(reviews.body[0].findings[0].status, 'verified'); assert.equal(reviews.body[0].dossier.current, true);
   const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.filter(item => item.action === 'security.finding_status_changed').length, 2);
   assert.equal(audit.body.filter(item => item.action === 'security.review_signed').length, 2);
+});
+
+test('two-step verification protects login, consumes recovery codes and revokes other sessions', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-mfa-'));
+  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const ownerRequest = authenticatedRequest(cookie);
+  assert.deepEqual((await ownerRequest(base, '/api/account/mfa')).body, { enabled: false, enabledAt: null, recoveryCodesRemaining: 0 });
+  assert.equal((await ownerRequest(base, '/api/account/mfa/setup', { method: 'POST', body: JSON.stringify({ currentPassword: 'wrong-password' }) })).status, 400);
+  const setup = await ownerRequest(base, '/api/account/mfa/setup', { method: 'POST', body: JSON.stringify({ currentPassword: 'correct-horse-battery' }) });
+  assert.equal(setup.status, 200); assert.match(setup.body.secret, /^[A-Z2-7]+$/); assert.match(setup.body.otpauthUri, /^otpauth:\/\/totp\//);
+  assert.equal((await ownerRequest(base, '/api/account/mfa/enable', { method: 'POST', body: JSON.stringify({ code: '000000' }) })).status, 400);
+  const enabled = await ownerRequest(base, '/api/account/mfa/enable', { method: 'POST', body: JSON.stringify({ code: totpCode(setup.body.secret) }) });
+  assert.equal(enabled.status, 200); assert.equal(enabled.body.recoveryCodes.length, 10); assert.equal((await ownerRequest(base, '/api/account/mfa')).body.enabled, true);
+  const invitationToken = 'mfa-invitation-token'; const mfaStore = new JsonStore(join(folder, 'store.json')); const invitationExpiry = new Date(Date.now() + 3600_000).toISOString();
+  await mfaStore.update(data => { data.workspaces.push({ id: 'ws_mfa_invite', name: 'MFA 邀请工作区', createdAt: new Date().toISOString() }); data.invitations.push({ id: 'inv_mfa', workspaceId: 'ws_mfa_invite', email: 'owner@example.com', role: 'approver', tokenHash: createHash('sha256').update(invitationToken).digest('hex'), expiresAt: invitationExpiry, createdAt: new Date().toISOString() }); });
+  const invitationPassword = await request(base, `/api/invitations/${invitationToken}`, { method: 'POST', body: JSON.stringify({ password: 'correct-horse-battery' }) });
+  assert.equal(invitationPassword.status, 202); assert.equal(invitationPassword.body.mfaRequired, true);
+  const invitationVerified = await request(base, '/api/login/mfa', { method: 'POST', body: JSON.stringify({ challengeToken: invitationPassword.body.challengeToken, code: totpCode(setup.body.secret) }) });
+  assert.equal(invitationVerified.status, 200); assert.equal(invitationVerified.body.workspace.id, 'ws_mfa_invite'); assert.equal(invitationVerified.body.role, 'approver');
+  const passwordLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'correct-horse-battery' }) });
+  assert.equal(passwordLogin.status, 202); assert.equal(passwordLogin.body.mfaRequired, true); assert.equal(passwordLogin.headers.get('set-cookie'), null);
+  assert.equal((await request(base, '/api/login/mfa', { method: 'POST', body: JSON.stringify({ challengeToken: passwordLogin.body.challengeToken, code: '111111' }) })).status, 401);
+  const verifiedLogin = await request(base, '/api/login/mfa', { method: 'POST', body: JSON.stringify({ challengeToken: passwordLogin.body.challengeToken, code: totpCode(setup.body.secret) }) });
+  assert.equal(verifiedLogin.status, 200); const secondCookie = verifiedLogin.headers.get('set-cookie').split(';')[0];
+  const recoveryLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'correct-horse-battery' }) });
+  const recovered = await request(base, '/api/login/mfa', { method: 'POST', body: JSON.stringify({ challengeToken: recoveryLogin.body.challengeToken, code: enabled.body.recoveryCodes[0] }) });
+  assert.equal(recovered.status, 200); assert.equal(recovered.body.recoveryCodesRemaining, 9);
+  const disabled = await authenticatedRequest(secondCookie)(base, '/api/account/mfa/disable', { method: 'POST', body: JSON.stringify({ currentPassword: 'correct-horse-battery', code: enabled.body.recoveryCodes[1] }) });
+  assert.equal(disabled.status, 200); assert.ok(disabled.body.sessionsRevoked >= 2);
+  assert.equal((await ownerRequest(base, '/api/session')).status, 401);
+  assert.equal((await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'correct-horse-battery' }) })).status, 200);
+  const store = new JsonStore(join(folder, 'store.json')); const audit = (await store.read()).auditEvents;
+  assert.ok(audit.some(item => item.action === 'user.mfa_enabled')); assert.ok(audit.some(item => item.action === 'user.mfa_disabled'));
 });
 
 test('authentication, roles and workspace isolation prevent cross-tenant access', async t => {

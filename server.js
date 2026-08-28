@@ -19,13 +19,14 @@ import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-poli
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 import { releaseSupportStatus, supportPolicy } from './lib/support.js';
+import { consumeMfaCode, createRecoveryCodes, createTotpSecret, hashRecoveryCode, verifyTotp } from './lib/mfa.js';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.36';
+const serviceVersion = '0.4.0-dev.37';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -135,7 +136,7 @@ const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
   return items.map(item => ({ ...item, unread: !readKeys.has(item.key) })).sort((a, b) => Number(b.priority === 'high') - Number(a.priority === 'high') || String(b.createdAt).localeCompare(String(a.createdAt)));
 };
 
-const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
+const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword), mfaEnabled: Boolean(user.mfaSecretEncrypted) });
 const githubDeliveryForWorkspace = (item, workspaceId, projects) => {
   const projectIds = new Set(projects.filter(project => project.workspaceId === workspaceId).map(project => project.id)); const { workspaceIds: hidden, ...safe } = item;
   return { ...safe, projectIds: (item.projectIds || []).filter(id => projectIds.has(id)), results: (item.results || []).filter(result => projectIds.has(result.projectId)) };
@@ -417,10 +418,39 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         loginAttempts.delete(attemptKey);
         const membership = data.memberships.find(item => item.userId === user.id);
         if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
+        if (user.mfaSecretEncrypted) {
+          const challengeToken = createSessionToken(); const now = new Date();
+          await store.update(current => {
+            current.mfaChallenges = current.mfaChallenges.filter(item => item.userId !== user.id && new Date(item.expiresAt) > now);
+            current.mfaChallenges.push({ id: createId('mfa'), tokenHash: sessionTokenHash(challengeToken), userId: user.id, workspaceId: membership.workspaceId, attempts: 0, expiresAt: new Date(now.getTime() + 5 * 60_000).toISOString(), createdAt: now.toISOString(), ...sessionMetadata(req) });
+          });
+          return json(res, 202, { mfaRequired: true, challengeToken, expiresInSeconds: 300 });
+        }
         const token = createSessionToken(); const now = new Date().toISOString();
         await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now, ...sessionMetadata(req) }); appendAudit(current, { workspaceId: membership.workspaceId, actorUserId: user.id, action: 'user.login', entityType: 'user', entityId: user.id, at: now }); });
         const workspace = data.workspaces.find(item => item.id === membership.workspaceId);
         return json(res, 200, { user: publicUser(user), workspace, role: membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/login/mfa') {
+        const input = await body(req); const challengeHash = sessionTokenHash(required(input.challengeToken, '登录挑战', 200)); const code = required(input.code, '验证码', 100); const now = new Date();
+        const completed = await store.update(data => {
+          data.mfaChallenges = data.mfaChallenges.filter(item => new Date(item.expiresAt) > now);
+          const challenge = data.mfaChallenges.find(item => item.tokenHash === challengeHash);
+          if (!challenge || challenge.attempts >= 5) return { error: '两步验证已失效，请重新登录', status: 401 };
+          const user = data.users.find(item => item.id === challenge.userId); let membership = data.memberships.find(item => item.userId === challenge.userId && item.workspaceId === challenge.workspaceId); let invitation = null;
+          if (challenge.purpose === 'invitation') { invitation = data.invitations.find(item => item.id === challenge.invitationId && item.workspaceId === challenge.workspaceId && !item.revokedAt && !item.acceptedAt && new Date(item.expiresAt) > now); if (!invitation || membership) { data.mfaChallenges = data.mfaChallenges.filter(item => item.id !== challenge.id); return { error: membership ? '账号已经加入该工作区' : '邀请链接无效或已过期', status: membership ? 409 : 410 }; } }
+          if (!user?.mfaSecretEncrypted || (!membership && !invitation)) { data.mfaChallenges = data.mfaChallenges.filter(item => item.id !== challenge.id); return { error: '两步验证状态已变化，请重新登录', status: 409 }; }
+          const verification = consumeMfaCode(user, code, decryptSecret(user.mfaSecretEncrypted, signingSecret), now.getTime());
+          if (!verification.valid) { challenge.attempts += 1; return { error: challenge.attempts >= 5 ? '验证码错误次数过多，请重新登录' : '验证码或恢复码错误', status: 401 }; }
+          if (verification.method === 'recovery') user.mfaRecoveryCodeHashes.splice(verification.recoveryIndex, 1);
+          data.mfaChallenges = data.mfaChallenges.filter(item => item.id !== challenge.id);
+          if (invitation) { membership = { id: createId('mem'), workspaceId: invitation.workspaceId, userId: user.id, role: invitation.role, createdAt: now.toISOString() }; invitation.acceptedAt = now.toISOString(); invitation.acceptedByUserId = user.id; data.memberships.push(membership); appendAudit(data, { workspaceId: invitation.workspaceId, actorUserId: user.id, action: 'invitation.accepted', entityType: 'invitation', entityId: invitation.id, details: { role: invitation.role, existingAccount: true, mfa: verification.method }, at: now.toISOString() }); }
+          const token = createSessionToken(); const at = now.toISOString(); const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(now.getTime() + 7 * 86400_000).toISOString(), createdAt: at, ip: challenge.ip, userAgent: challenge.userAgent };
+          data.sessions.push(session); appendAudit(data, { workspaceId: membership.workspaceId, actorUserId: user.id, action: 'user.login', entityType: 'user', entityId: user.id, details: { mfa: verification.method }, at });
+          return { user, membership, workspace: data.workspaces.find(item => item.id === membership.workspaceId), token, recoveryCodesRemaining: user.mfaRecoveryCodeHashes.length };
+        });
+        if (completed.error) return json(res, completed.status, { error: completed.error });
+        return json(res, 200, { user: publicUser(completed.user), workspace: completed.workspace, role: completed.membership.role, recoveryCodesRemaining: completed.recoveryCodesRemaining }, { 'set-cookie': sessionCookie(completed.token, { secure: secureCookie }) });
       }
       if (segments[0] === 'api' && segments[1] === 'invitations' && segments[2] && segments.length === 3 && ['GET', 'POST'].includes(req.method)) {
         if (segments[2].length > 200) return json(res, 410, { error: '邀请链接无效或已过期' });
@@ -433,6 +463,11 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const input = await body(req); let passwordHash = null;
         if (existingUser) {
           if (!await verifyPassword(input.password, existingUser.passwordHash)) return json(res, 401, { error: '账号密码错误' });
+          if (existingUser.mfaSecretEncrypted) {
+            const challengeToken = createSessionToken(); const challengeNow = new Date();
+            await store.update(data => { data.mfaChallenges = data.mfaChallenges.filter(item => item.userId !== existingUser.id && new Date(item.expiresAt) > challengeNow); data.mfaChallenges.push({ id: createId('mfa'), tokenHash: sessionTokenHash(challengeToken), userId: existingUser.id, workspaceId: invitation.workspaceId, invitationId: invitation.id, purpose: 'invitation', attempts: 0, expiresAt: new Date(challengeNow.getTime() + 5 * 60_000).toISOString(), createdAt: challengeNow.toISOString(), ...sessionMetadata(req) }); });
+            return json(res, 202, { mfaRequired: true, challengeToken, expiresInSeconds: 300 });
+          }
         } else passwordHash = await hashPassword(input.password);
         const token = createSessionToken(); const now = new Date().toISOString();
         const accepted = await store.update(data => {
@@ -508,6 +543,45 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return { id: target.id, revokedAt: at };
         });
         return json(res, 200, revoked);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/account/mfa') {
+        if (!session) return json(res, 403, { error: 'API Key 不能读取两步验证设置' });
+        return json(res, 200, { enabled: Boolean(currentUser.mfaSecretEncrypted), enabledAt: currentUser.mfaEnabledAt || null, recoveryCodesRemaining: currentUser.mfaRecoveryCodeHashes?.length || 0 });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/account/mfa/setup') {
+        if (!session) return json(res, 403, { error: 'API Key 不能设置两步验证' });
+        const input = await body(req); if (!await verifyPassword(input.currentPassword, currentUser.passwordHash)) return json(res, 400, { error: '当前密码错误' });
+        if (currentUser.mfaSecretEncrypted) return json(res, 409, { error: '两步验证已经启用' });
+        keyFromSecret(signingSecret); const secret = createTotpSecret(); const now = new Date().toISOString();
+        await store.update(data => { const user = data.users.find(item => item.id === currentUser.id); user.mfaPendingSecretEncrypted = encryptSecret(secret, signingSecret); user.mfaPendingCreatedAt = now; });
+        const issuer = 'ShipWitness'; const label = `${issuer}:${currentUser.email}`;
+        return json(res, 200, { secret, otpauthUri: `otpauth://totp/${encodeURIComponent(label)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`, expiresInSeconds: 600 });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/account/mfa/enable') {
+        if (!session) return json(res, 403, { error: 'API Key 不能启用两步验证' });
+        const input = await body(req); const enabled = await store.update(data => {
+          const user = data.users.find(item => item.id === currentUser.id); const createdAt = new Date(user.mfaPendingCreatedAt || 0);
+          if (!user.mfaPendingSecretEncrypted || !Number.isFinite(createdAt.getTime()) || Date.now() - createdAt.getTime() > 10 * 60_000) { delete user.mfaPendingSecretEncrypted; delete user.mfaPendingCreatedAt; return { error: '绑定请求已过期，请重新开始', status: 410 }; }
+          const secret = decryptSecret(user.mfaPendingSecretEncrypted, signingSecret); if (!verifyTotp(input.code, secret)) return { error: '动态验证码错误', status: 400 };
+          const recoveryCodes = createRecoveryCodes(); const at = new Date().toISOString(); user.mfaSecretEncrypted = user.mfaPendingSecretEncrypted; user.mfaRecoveryCodeHashes = recoveryCodes.map(hashRecoveryCode); user.mfaEnabledAt = at; delete user.mfaPendingSecretEncrypted; delete user.mfaPendingCreatedAt;
+          const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== user.id || item.tokenHash === cookieTokenHash); const sessionsRevoked = before - data.sessions.length;
+          appendAudit(data, { workspaceId, actorUserId: user.id, action: 'user.mfa_enabled', entityType: 'user', entityId: user.id, details: { recoveryCodes: recoveryCodes.length, sessionsRevoked }, at }); return { recoveryCodes, enabledAt: at, sessionsRevoked };
+        });
+        if (enabled.error) return json(res, enabled.status, { error: enabled.error });
+        return json(res, 200, enabled);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/account/mfa/disable') {
+        if (!session) return json(res, 403, { error: 'API Key 不能停用两步验证' });
+        const input = await body(req); if (!await verifyPassword(input.currentPassword, currentUser.passwordHash)) return json(res, 400, { error: '当前密码错误' });
+        const disabled = await store.update(data => {
+          const user = data.users.find(item => item.id === currentUser.id); if (!user.mfaSecretEncrypted) return { error: '两步验证尚未启用', status: 409 };
+          const verification = consumeMfaCode(user, input.code, decryptSecret(user.mfaSecretEncrypted, signingSecret)); if (!verification.valid) return { error: '验证码或恢复码错误', status: 400 };
+          delete user.mfaSecretEncrypted; delete user.mfaRecoveryCodeHashes; delete user.mfaEnabledAt; delete user.mfaPendingSecretEncrypted; delete user.mfaPendingCreatedAt;
+          const at = new Date().toISOString(); const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== user.id || item.tokenHash === cookieTokenHash); const sessionsRevoked = before - data.sessions.length;
+          appendAudit(data, { workspaceId, actorUserId: user.id, action: 'user.mfa_disabled', entityType: 'user', entityId: user.id, details: { verification: verification.method, sessionsRevoked }, at }); return { disabledAt: at, sessionsRevoked };
+        });
+        if (disabled.error) return json(res, disabled.status, { error: disabled.error });
+        return json(res, 200, disabled);
       }
 
       if (currentUser?.mustChangePassword && !['GET', 'HEAD'].includes(req.method) && url.pathname !== '/api/alerts/refresh') return json(res, 428, { error: '管理员已重置密码，请先修改临时密码' });
@@ -748,10 +822,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
         const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
         const githubProjects = authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt && item.githubRepo).length;
+        const privilegedUserIds = new Set(authData.memberships.filter(item => item.workspaceId === workspaceId && ['owner', 'approver'].includes(item.role)).map(item => item.userId)); const privilegedWithoutMfa = authData.users.filter(item => privilegedUserIds.has(item.id) && !item.mfaSecretEncrypted).length;
         const checks = [
           { id: 'postgres', category: '基础设施', label: '生产数据库', status: storage.engine === 'postgresql' ? 'pass' : 'block', detail: storage.engine === 'postgresql' ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: storage.engine === 'postgresql' ? null : '配置 DATABASE_URL 并执行迁移' },
           { id: 'https', category: '访问安全', label: 'HTTPS 公网地址', status: publicHttps ? 'pass' : 'block', detail: publicHttps ? '已配置外部 HTTPS 地址，邀请和任务链接可安全生成。' : '未配置有效的 SHIPWITNESS_PUBLIC_URL HTTPS 地址。', action: publicHttps ? null : '在反向代理启用 HTTPS，并配置 SHIPWITNESS_PUBLIC_URL' },
           { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
+          { id: 'privileged_mfa', category: '访问安全', label: '高权限账号两步验证', status: privilegedWithoutMfa ? 'warning' : 'pass', detail: privilegedWithoutMfa ? `${privilegedWithoutMfa} 个管理员或审批人尚未启用两步验证。` : `${privilegedUserIds.size} 个高权限账号均已启用两步验证。`, action: privilegedWithoutMfa ? '请管理员和审批人在账户安全中绑定 TOTP 验证器' : null },
           { id: 'audit', category: '证据治理', label: '审计链完整性', status: audit.valid ? 'pass' : 'block', detail: audit.valid ? `${audit.checked} 条审计事件哈希链完整。` : `审计链异常：${audit.brokenEventId ? `事件 ${audit.brokenEventId}` : '完整性校验失败'}`, action: audit.valid ? null : '停止发布并调查审计链异常' },
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
           { id: 'security_review', category: '访问安全', label: '一年内外部安全评审', status: securityReviewFresh ? 'pass' : 'warning', detail: securityReviewFresh ? `独立安全评审距今 ${reviewAgeDays.toFixed(0)} 天，参考编号已登记。` : effectiveReviewReference ? '已登记评审参考，但评审日期缺失、无效或超过一年。' : '尚未登记独立安全评审结果。', action: securityReviewFresh ? null : '在安全评审中心登记报告与完成日期，或配置对应部署证据' },
