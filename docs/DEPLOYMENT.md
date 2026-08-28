@@ -32,6 +32,8 @@ Before handing an artifact to a customer, run `npm run smoke:self` from the exac
 
 GitHub CI and tag releases additionally build the exact Docker delivery image and run the same self-smoke inside that image as the unprivileged application user. A tag cannot publish release assets when the image-level browser or evidence loop fails.
 
+Every extracted release includes `SBOM.cdx.json`, a CycloneDX 1.5 inventory generated from the locked production dependency graph. `npm run release:verify -- <release-directory>` validates its root product identity, version, component list, and checksum registration together with the remaining payload. Keep the SBOM beside the release manifest in customer delivery records.
+
 Before requesting a public-production decision, record the independent review evidence and stable-release lifecycle metadata:
 
 ```bash

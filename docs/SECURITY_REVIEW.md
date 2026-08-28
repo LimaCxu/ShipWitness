@@ -24,7 +24,7 @@ Status: updated for `0.4.0-dev.51`. This is a maintainer threat-model review, no
 | Duplicate/stuck work | Serializable run claim and stale Webhook delivery lease recovery | concurrency and delivery tests |
 | Agent/API replay | Versioned machine API, scoped keys, transactional idempotency records, request-conflict rejection | extension API and PostgreSQL tests |
 | GitHub inbound events | Exact raw-body HMAC validation, delivery-ID replay protection, repository and branch matching | GitHub webhook tests |
-| Supply chain | Locked dependencies, minimal production install, high-severity `npm audit` CI gate | GitHub Actions CI |
+| Supply chain | Locked dependencies, minimal production install, high-severity `npm audit` CI gate, checksummed CycloneDX production SBOM | GitHub Actions CI and release verifier |
 
 ## Residual risks before 1.0
 

@@ -41,6 +41,7 @@
 - [x] Bounded, expiring login throttling with standards-based retry guidance
 - [x] Isolated delivery self-smoke covering real browser evidence, release gate, and signed dossier
 - [x] Exact delivery-image self-smoke enforced in CI and tag releases
+- [x] Checksummed CycloneDX production SBOM enforced in every release bundle
 
 ## 1.0 — Self-hosted release gate
 

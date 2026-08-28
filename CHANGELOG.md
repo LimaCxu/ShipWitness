@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.54
+
+- Release bundles now include a normalized CycloneDX 1.5 SBOM generated from the locked production dependency graph.
+- Release verification requires the SBOM, validates its ShipWitness name and version, checks that it contains components and dependency relationships, and protects it through the per-file SHA-256 manifest.
+
 ## 0.4.0-dev.53
 
 - CI now builds the customer delivery image and runs the full browser-to-signed-dossier self-smoke inside that exact container.
