@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.47
+
+- Added 30, 90, 180, and 365-day acceptance credential lifetimes with a secure 90-day default.
+- Credential listings now distinguish active, expiring, expired, and legacy no-expiry records without returning secret material.
+- Expired credentials are rejected by dependency preflight, task creation, and browser execution; rotation renews the selected validity period.
+
 ## 0.4.0-dev.46
 
 - Added credential dependency diagnostics to acceptance-contract listings and project preflight.

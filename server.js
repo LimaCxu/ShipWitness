@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.46';
+const serviceVersion = '0.4.0-dev.47';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -66,6 +66,20 @@ const required = (value, field, maxLength = 5000) => {
   if (typeof value !== 'string' || !value.trim()) throw Object.assign(new Error(`${field}不能为空`), { status: 400 });
   if (value.trim().length > maxLength) throw Object.assign(new Error(`${field}长度不能超过 ${maxLength} 个字符`), { status: 400 });
   return value.trim();
+};
+
+const acceptanceSecretLifecycle = (item, now = Date.now()) => {
+  if (!item.expiresAt) return { status: 'no_expiry', daysRemaining: null };
+  const remainingMs = new Date(item.expiresAt).getTime() - now;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return { status: 'expired', daysRemaining: 0 };
+  const daysRemaining = Math.ceil(remainingMs / 86_400_000);
+  return { status: daysRemaining <= 14 ? 'expiring' : 'active', daysRemaining };
+};
+const acceptanceSecretIsUsable = (item, now = Date.now()) => acceptanceSecretLifecycle(item, now).status !== 'expired';
+const acceptanceSecretExpiry = (input, now = Date.now()) => {
+  const days = Number(input.expiresInDays ?? 90); const allowed = new Set([30, 90, 180, 365]);
+  if (!allowed.has(days)) throw Object.assign(new Error('凭据有效期必须是 30、90、180 或 365 天'), { status: 400 });
+  return new Date(now + days * 86_400_000).toISOString();
 };
 
 const normalizedEmail = value => {
@@ -1099,17 +1113,17 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         requireRole(['owner']);
         const activeProjectIds = new Set(authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt).map(item => item.id));
         const referenceCount = name => authData.contracts.filter(item => item.workspaceId === workspaceId && activeProjectIds.has(item.projectId) && item.enabled && (item.steps || []).some(step => step.secretRef === name)).length;
-        return json(res, 200, authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(({ encryptedValue: hidden, ...item }) => ({ ...item, referenceCount: referenceCount(item.name) })));
+        return json(res, 200, authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(({ encryptedValue: hidden, ...item }) => ({ ...item, ...acceptanceSecretLifecycle(item), referenceCount: referenceCount(item.name) })));
       }
       if (req.method === 'POST' && url.pathname === '/api/acceptance-secrets') {
         requireRole(['owner']); const input = await body(req); const name = required(input.name, '凭据名称', 64).toUpperCase();
         if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) return json(res, 400, { error: '凭据名称必须以字母开头，只能包含大写字母、数字和下划线' });
-        const value = required(input.value, '凭据值', 10_000); const created = await store.update(data => { if (data.acceptanceSecrets.some(item => item.workspaceId === workspaceId && item.name === name)) throw Object.assign(new Error('凭据名称已存在；请先删除再重新创建'), { status: 409 }); const now = new Date().toISOString(); const item = { id: createId('asec'), workspaceId, name, encryptedValue: encryptSecret(value, signingSecret), createdByUserId: currentUser.id, createdAt: now, updatedAt: now }; data.acceptanceSecrets.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.created', entityType: 'acceptance_secret', entityId: item.id, details: { name }, at: now }); return item; });
+        const value = required(input.value, '凭据值', 10_000); const expiresAt = acceptanceSecretExpiry(input); const created = await store.update(data => { if (data.acceptanceSecrets.some(item => item.workspaceId === workspaceId && item.name === name)) throw Object.assign(new Error('凭据名称已存在；请使用轮换功能更新'), { status: 409 }); const now = new Date().toISOString(); const item = { id: createId('asec'), workspaceId, name, encryptedValue: encryptSecret(value, signingSecret), expiresAt, createdByUserId: currentUser.id, createdAt: now, updatedAt: now }; data.acceptanceSecrets.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.created', entityType: 'acceptance_secret', entityId: item.id, details: { name, expiresAt }, at: now }); return item; });
         const { encryptedValue: hidden, ...safe } = created; return json(res, 201, safe);
       }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'acceptance-secrets' && segments[2]) {
-        requireRole(['owner']); const input = await body(req); const value = required(input.value, '新凭据值', 10_000);
-        const rotated = await store.update(data => { const item = data.acceptanceSecrets.find(candidate => candidate.id === segments[2] && candidate.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); const at = new Date().toISOString(); item.encryptedValue = encryptSecret(value, signingSecret); item.updatedAt = at; item.rotatedByUserId = currentUser.id; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.rotated', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name }, at }); return item; });
+        requireRole(['owner']); const input = await body(req); const value = required(input.value, '新凭据值', 10_000); const expiresAt = acceptanceSecretExpiry(input);
+        const rotated = await store.update(data => { const item = data.acceptanceSecrets.find(candidate => candidate.id === segments[2] && candidate.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); const at = new Date().toISOString(); item.encryptedValue = encryptSecret(value, signingSecret); item.expiresAt = expiresAt; item.updatedAt = at; item.rotatedByUserId = currentUser.id; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.rotated', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name, expiresAt }, at }); return item; });
         const { encryptedValue: hidden, ...safe } = rotated; return json(res, 200, safe);
       }
       if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'acceptance-secrets' && segments[2]) {
@@ -1322,8 +1336,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt);
         if (!project) return json(res, 404, { error: '项目不存在' });
         const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url, allowedTargetOrigins), checkBrowserAvailability()]);
-        const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name)); const requiredSecrets = [...new Set(data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id && item.enabled).flatMap(item => (item.steps || []).map(step => step.secretRef).filter(Boolean)))]; const missingSecretRefs = requiredSecrets.filter(name => !availableSecrets.has(name));
-        const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, credentials: missingSecretRefs.length ? { status: 'failed', detail: `缺少 ${missingSecretRefs.length} 个验收凭据：${missingSecretRefs.join('、')}`, missingSecretRefs } : { status: 'ready', detail: requiredSecrets.length ? `${requiredSecrets.length} 个验收凭据均已安全配置` : '当前启用标准不需要验收凭据', missingSecretRefs: [] }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
+        const workspaceSecrets = data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId); const availableSecrets = new Set(workspaceSecrets.filter(item => acceptanceSecretIsUsable(item)).map(item => item.name)); const requiredSecrets = [...new Set(data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id && item.enabled).flatMap(item => (item.steps || []).map(step => step.secretRef).filter(Boolean)))]; const missingSecretRefs = requiredSecrets.filter(name => !availableSecrets.has(name)); const expiredSecretRefs = requiredSecrets.filter(name => workspaceSecrets.some(item => item.name === name && !acceptanceSecretIsUsable(item)));
+        const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, credentials: missingSecretRefs.length ? { status: 'failed', detail: expiredSecretRefs.length ? `有 ${expiredSecretRefs.length} 个验收凭据已过期：${expiredSecretRefs.join('、')}` : `缺少 ${missingSecretRefs.length} 个验收凭据：${missingSecretRefs.join('、')}`, missingSecretRefs, expiredSecretRefs } : { status: 'ready', detail: requiredSecrets.length ? `${requiredSecrets.length} 个验收凭据均在有效期内` : '当前启用标准不需要验收凭据', missingSecretRefs: [], expiredSecretRefs: [] }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
         return json(res, 200, { projectId: project.id, checkedAt: new Date().toISOString(), checks });
       }
       if (req.method === 'GET' && url.pathname === '/api/contracts/export') {
@@ -1376,7 +1390,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const data = await store.read();
         const contracts = (data.contracts || []).filter(item => item.workspaceId === workspaceId && (!url.searchParams.get('projectId') || item.projectId === url.searchParams.get('projectId')));
         contracts.sort((a, b) => Number(b.enabled) - Number(a.enabled) || b.updatedAt.localeCompare(a.updatedAt));
-        const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name));
+        const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId && acceptanceSecretIsUsable(item)).map(item => item.name));
         return json(res, 200, contracts.map(item => ({ ...item, missingSecretRefs: [...new Set((item.steps || []).map(step => step.secretRef).filter(name => name && !availableSecrets.has(name)))] })));
       }
       if (req.method === 'POST' && url.pathname === '/api/contracts') {
@@ -1439,7 +1453,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => { const { sourceFeedbackId: ignored, ...safe } = item; return { ...safe, steps: normalizeSteps(item.steps) }; }) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version, ...(item.sourceFeedbackId ? { sourceFeedbackId: item.sourceFeedbackId } : {}) }));
-          const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name)); const missingSecretRefs = [...new Set(criteria.flatMap(item => (item.steps || []).map(step => step.secretRef).filter(name => name && !availableSecrets.has(name))))];
+          const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId && acceptanceSecretIsUsable(item)).map(item => item.name)); const missingSecretRefs = [...new Set(criteria.flatMap(item => (item.steps || []).map(step => step.secretRef).filter(name => name && !availableSecrets.has(name))))];
           if (missingSecretRefs.length) throw Object.assign(new Error(`验收任务缺少凭据：${missingSecretRefs.join('、')}；请管理员先在凭据保险箱中配置`), { status: 409 });
           const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, repositorySnapshot: project.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
           data.runs.unshift(value);
@@ -1478,7 +1492,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
           const secretRefs = new Set(run.criteria.flatMap(item => item.steps || []).map(step => step.secretRef).filter(Boolean)); const executionSecrets = {};
-          for (const item of authData.acceptanceSecrets.filter(value => value.workspaceId === workspaceId && secretRefs.has(value.name))) executionSecrets[item.name] = decryptSecret(item.encryptedValue, signingSecret);
+          for (const item of authData.acceptanceSecrets.filter(value => value.workspaceId === workspaceId && secretRefs.has(value.name) && acceptanceSecretIsUsable(value))) executionSecrets[item.name] = decryptSecret(item.encryptedValue, signingSecret);
           const execution = hasBrowserSteps ? await browserRunExecutor({ project, run, artifactsDir, allowedOrigins: allowedTargetOrigins, secrets: executionSecrets }) : await basicRunExecutor(project, run, allowedTargetOrigins);
           const completed = await store.update(data => {
             const current = data.runs.find(item => item.id === run.id);

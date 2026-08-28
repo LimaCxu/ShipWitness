@@ -38,16 +38,17 @@ test('SMTP configuration is disabled by default and rejects partial credentials'
 
 test('acceptance credential vault is owner-only and never returns secret material', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-secrets-'));
-  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret });
+  const store = new JsonStore(join(folder, 'store.json')); const server = createApp({ store, signingSecret });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`; const ownerRequest = authenticatedRequest(await setupOwner(base));
   const plaintext = 'customer-password-never-returned';
   const created = await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'login_password', value: plaintext }) });
-  assert.equal(created.status, 201); assert.equal(created.body.name, 'LOGIN_PASSWORD');
+  assert.equal(created.status, 201); assert.equal(created.body.name, 'LOGIN_PASSWORD'); assert.ok(new Date(created.body.expiresAt) > new Date());
   assert.equal(JSON.stringify(created.body).includes(plaintext), false); assert.equal(Object.hasOwn(created.body, 'encryptedValue'), false);
-  const listed = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(listed.status, 200); assert.equal(listed.body.length, 1); assert.equal(listed.body[0].referenceCount, 0);
+  const listed = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(listed.status, 200); assert.equal(listed.body.length, 1); assert.equal(listed.body[0].referenceCount, 0); assert.equal(listed.body[0].status, 'active'); assert.equal(listed.body[0].daysRemaining, 90);
   assert.equal(JSON.stringify(listed.body).includes(plaintext), false); assert.equal(Object.hasOwn(listed.body[0], 'encryptedValue'), false);
   assert.equal((await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'LOGIN_PASSWORD', value: 'other' }) })).status, 409);
+  assert.equal((await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'BAD_EXPIRY', value: 'other', expiresInDays: 7 }) })).status, 400);
   await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'secret-member@example.com', password: 'member-password-123', role: 'member' }) });
   const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'secret-member@example.com', password: 'member-password-123' }) });
   const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
@@ -69,6 +70,10 @@ test('acceptance credential vault is owner-only and never returns secret materia
   await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'LOGIN_PASSWORD', value: 'restored-safe-value' }) });
   assert.deepEqual((await ownerRequest(base, `/api/contracts?projectId=${project.body.id}`)).body[0].missingSecretRefs, []); assert.equal((await ownerRequest(base, `/api/projects/${project.body.id}/preflight`, { method: 'POST' })).body.checks.credentials.status, 'ready');
   assert.equal((await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '验证登录凭据依赖' }) })).status, 201);
+  await store.update(data => { data.acceptanceSecrets.find(item => item.name === 'LOGIN_PASSWORD').expiresAt = new Date(Date.now() - 86_400_000).toISOString(); });
+  const expiredList = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(expiredList.body[0].status, 'expired'); assert.equal(expiredList.body[0].daysRemaining, 0);
+  const expiredPreflight = await ownerRequest(base, `/api/projects/${project.body.id}/preflight`, { method: 'POST' }); assert.equal(expiredPreflight.body.checks.credentials.status, 'failed'); assert.deepEqual(expiredPreflight.body.checks.credentials.expiredSecretRefs, ['LOGIN_PASSWORD']);
+  assert.equal((await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '过期凭据不得执行' }) })).status, 409);
   const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.some(item => item.action === 'acceptance_secret.rotated'), true); assert.equal(JSON.stringify(audit.body).includes(rotatedPlaintext), false);
 });
 
