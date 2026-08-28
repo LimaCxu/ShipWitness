@@ -656,6 +656,26 @@ test('readiness report recognizes a fully configured production candidate', asyn
   assert.equal(support.status, 200); assert.equal(support.body.schema, 'shipwitness.support-policy.v1'); assert.equal(support.body.currentRelease.status, 'supported');
 });
 
+test('security review findings block release until retested or explicitly time-bound', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-security-review-')); const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const ownerRequest = authenticatedRequest(cookie);
+  const review = await ownerRequest(base, '/api/security/reviews', { method: 'POST', body: JSON.stringify({ provider: 'Independent Security Lab', reference: 'PENTEST-2026-001', reviewedAt: new Date().toISOString(), scope: 'Web application, API, authentication and deployment boundary', summary: 'One high-risk authorization finding requires remediation.', findings: [{ severity: 'high', title: 'Authorization bypass', description: 'A crafted request could bypass one project boundary.', remediation: 'Apply workspace filter before lookup.' }] }) });
+  assert.equal(review.status, 201); assert.equal(review.body.findings.length, 1);
+  let readiness = await ownerRequest(base, '/api/readiness');
+  assert.equal(readiness.body.checks.find(item => item.id === 'security_review').status, 'pass');
+  assert.equal(readiness.body.checks.find(item => item.id === 'security_findings').status, 'block');
+  const findingId = review.body.findings[0].id; const expiresAt = new Date(Date.now() + 7 * 86400_000).toISOString();
+  const accepted = await ownerRequest(base, `/api/security/findings/${findingId}`, { method: 'PATCH', body: JSON.stringify({ status: 'risk_accepted', rationale: 'Temporary pilot-only mitigation with network allowlist.', expiresAt }) });
+  assert.equal(accepted.status, 200); assert.equal(accepted.body.status, 'risk_accepted');
+  readiness = await ownerRequest(base, '/api/readiness'); assert.equal(readiness.body.checks.find(item => item.id === 'security_findings').status, 'warning');
+  const verified = await ownerRequest(base, `/api/security/findings/${findingId}`, { method: 'PATCH', body: JSON.stringify({ status: 'verified', evidence: 'Independent retest PENTEST-2026-001-R1 confirms the bypass is closed.' }) });
+  assert.equal(verified.status, 200); assert.match(verified.body.retestEvidence, /R1/);
+  readiness = await ownerRequest(base, '/api/readiness'); assert.equal(readiness.body.checks.find(item => item.id === 'security_findings').status, 'pass');
+  const reviews = await ownerRequest(base, '/api/security/reviews'); assert.equal(reviews.body[0].findings[0].status, 'verified');
+  const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.filter(item => item.action === 'security.finding_status_changed').length, 2);
+});
+
 test('authentication, roles and workspace isolation prevent cross-tenant access', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-auth-'));
   const server = createApp({ storeFile: join(folder, 'store.json') });

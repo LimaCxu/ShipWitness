@@ -40,3 +40,31 @@
 .github-delivery-list article p,.github-delivery-list > p.empty { margin: 0; color: #8790a2; font-size: 8px; }
 .github-delivery-list article em { color: #667085; font-size: 8px; font-style: normal; }
 .github-delivery-list article button { padding: 4px 7px; border: 1px solid #cfd6e3; border-radius: 4px; color: #3157d5; background: #fff; font-size: 8px; cursor: pointer; }
+.security-review-section { padding: 20px 26px; border-bottom: 1px solid #e4e7ec; background: #f8f9fc; }
+.security-review-section > .section-title em { color: #667085; font-size: 8px; font-style: normal; }
+.security-review-section > .section-title em.blocked { color: #b42318; }
+.security-review-section > .section-title em.ready { color: #027a48; }
+.security-review-list { display: grid; gap: 8px; }
+.security-review-list > article { padding: 12px; border: 1px solid #e1e5ed; border-radius: 8px; background: #fff; }
+.security-review-list > article > header { display: flex; align-items: flex-start; justify-content: space-between; }
+.security-review-list header div { display: grid; gap: 3px; }
+.security-review-list header b { font-size: 10px; }
+.security-review-list header small,.security-review-list > article > p,.security-review-list > p { margin: 0; color: #7b8498; font-size: 8px; line-height: 1.55; }
+.security-review-list header em { color: #59647a; font-size: 8px; font-style: normal; }
+.security-review-list > article > p { margin: 8px 0; }
+.security-review-list > article > div { display: grid; gap: 5px; }
+.security-review-list section { display: grid; grid-template-columns: 38px minmax(0,1fr) auto auto auto; gap: 6px; align-items: center; padding: 8px; border-left: 3px solid #d09a37; background: #fafbfc; }
+.security-review-list section.critical,.security-review-list section.high { border-left-color: #d2554b; }
+.security-review-list section.low { border-left-color: #7d8aa5; }
+.security-review-list section > span { color: #8b6113; font-size: 8px; font-weight: 700; }
+.security-review-list section > div { display: grid; gap: 2px; min-width: 0; }
+.security-review-list section b { overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.security-review-list section small { color: #8a93a7; font-size: 7px; }
+.security-review-list section button { padding: 4px 6px; border: 1px solid #d3d9e6; border-radius: 4px; color: #4058bf; background: #fff; font-size: 7px; cursor: pointer; }
+.security-review-list section > em { color: #027a48; font-size: 8px; font-style: normal; }
+.security-review-form { display: grid; gap: 7px; margin-top: 10px; padding: 11px; border: 1px solid #dfe3ec; border-radius: 8px; background: #fff; }
+.security-review-form > div { display: grid; grid-template-columns: 1fr 1fr 110px; gap: 6px; }
+.security-review-form input,.security-review-form textarea,.security-review-form select { min-width: 0; padding: 8px 9px; border: 1px solid #d0d5dd; border-radius: 5px; background: #fff; font: 9px var(--sans); }
+.security-review-form textarea { min-height: 55px; resize: vertical; }
+.security-review-form .security-finding-fields { grid-template-columns: 90px 1fr 1.4fr; }
+.security-review-form > button { height: 34px; border: 0; border-radius: 6px; color: #fff; background: #3157d5; font-size: 9px; font-weight: 700; cursor: pointer; }

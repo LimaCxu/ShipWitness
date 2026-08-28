@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.24';
+const serviceVersion = '0.4.0-dev.25';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -614,13 +614,55 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           checkedAt: new Date(now).toISOString()
         });
       }
+      if (req.method === 'GET' && url.pathname === '/api/security/reviews') {
+        requireRole(['owner', 'approver']);
+        const reviews = authData.securityReviews.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt));
+        return json(res, 200, reviews.map(review => ({ ...review, findings: authData.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === review.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) })));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/security/reviews') {
+        requireRole(['owner']); const input = await body(req); const reviewedAt = new Date(input.reviewedAt); const now = new Date();
+        if (!Number.isFinite(reviewedAt.getTime()) || reviewedAt > new Date(now.getTime() + 24 * 60 * 60_000)) return json(res, 400, { error: '安全评审日期无效' });
+        const suppliedFindings = Array.isArray(input.findings) ? input.findings : [];
+        if (suppliedFindings.length > 100) return json(res, 400, { error: '单次最多登记 100 个安全发现' });
+        const created = await store.update(data => {
+          const at = now.toISOString(); const review = { id: createId('srev'), workspaceId, provider: required(input.provider, '评审机构', 200), reference: required(input.reference, '报告编号', 300), reviewedAt: reviewedAt.toISOString(), scope: required(input.scope, '评审范围', 2000), summary: required(input.summary, '评审摘要', 5000), createdByUserId: currentUser.id, createdAt: at };
+          data.securityReviews.unshift(review); const findings = suppliedFindings.map((item, index) => {
+            const severity = String(item.severity || '').toLowerCase(); if (!['critical', 'high', 'medium', 'low'].includes(severity)) throw Object.assign(new Error(`第 ${index + 1} 个发现的严重级别无效`), { status: 400 });
+            return { id: createId('sec'), workspaceId, reviewId: review.id, severity, title: required(item.title, `第 ${index + 1} 个发现标题`, 500), description: required(item.description, `第 ${index + 1} 个发现说明`, 5000), remediation: String(item.remediation || '').trim().slice(0, 5000), status: 'open', createdAt: at, updatedAt: at };
+          });
+          data.securityFindings.unshift(...findings); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'security.review_recorded', entityType: 'security_review', entityId: review.id, details: { provider: review.provider, reference: review.reference, reviewedAt: review.reviewedAt, findings: findings.length }, at }); return { ...review, findings };
+        });
+        return json(res, 201, created);
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'security' && segments[2] === 'findings' && segments[3]) {
+        requireRole(['owner', 'approver']); const input = await body(req); const allowed = ['open', 'remediating', 'fixed_pending_retest', 'verified', 'risk_accepted'];
+        if (!allowed.includes(input.status)) return json(res, 400, { error: '安全发现状态无效' });
+        if (input.status === 'risk_accepted' && membership.role !== 'owner') return json(res, 403, { error: '只有管理员可以接受安全风险' });
+        const updated = await store.update(data => {
+          const finding = data.securityFindings.find(item => item.id === segments[3] && item.workspaceId === workspaceId); if (!finding) throw Object.assign(new Error('安全发现不存在'), { status: 404 });
+          const at = new Date().toISOString(); const previous = finding.status;
+          if (input.status === 'verified') { finding.retestEvidence = required(input.evidence, '复测证据', 5000); finding.verifiedAt = at; finding.verifiedByUserId = currentUser.id; finding.riskAcceptance = null; }
+          if (input.status === 'risk_accepted') {
+            const expiresAt = new Date(input.expiresAt); if (!Number.isFinite(expiresAt.getTime()) || expiresAt <= new Date() || expiresAt > new Date(Date.now() + 90 * 86400_000)) throw Object.assign(new Error('风险接受到期日必须在未来 90 天内'), { status: 400 });
+            finding.riskAcceptance = { rationale: required(input.rationale, '风险接受原因', 2000), expiresAt: expiresAt.toISOString(), acceptedAt: at, acceptedByUserId: currentUser.id }; finding.retestEvidence = null;
+          }
+          if (!['verified', 'risk_accepted'].includes(input.status)) { finding.riskAcceptance = null; finding.retestEvidence = null; }
+          finding.status = input.status; finding.updatedAt = at; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'security.finding_status_changed', entityType: 'security_finding', entityId: finding.id, details: { reviewId: finding.reviewId, severity: finding.severity, from: previous, to: finding.status, riskExpiresAt: finding.riskAcceptance?.expiresAt || null }, at }); return finding;
+        });
+        return json(res, 200, updated);
+      }
       if (req.method === 'GET' && url.pathname === '/api/readiness') {
         requireRole(['owner']);
         const now = new Date(); const storage = await store.health(); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId); const audit = verifyAuditChain(workspaceAudit);
         let masterKeyValid = false; try { keyFromSecret(signingSecret); masterKeyValid = true; } catch {}
         const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
         const backupTime = lastVerifiedBackupAt ? new Date(lastVerifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
-        const reviewTime = securityReviewedAt ? new Date(securityReviewedAt) : null; const reviewAgeDays = reviewTime ? (now.getTime() - reviewTime.getTime()) / 86_400_000 : null; const securityReviewFresh = Boolean(securityReviewReference && Number.isFinite(reviewAgeDays) && reviewAgeDays >= -0.1 && reviewAgeDays <= 365);
+        const recordedReview = authData.securityReviews.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt))[0];
+        const effectiveReviewReference = recordedReview?.reference || securityReviewReference; const effectiveReviewedAt = recordedReview?.reviewedAt || securityReviewedAt;
+        const reviewTime = effectiveReviewedAt ? new Date(effectiveReviewedAt) : null; const reviewAgeDays = reviewTime ? (now.getTime() - reviewTime.getTime()) / 86_400_000 : null; const securityReviewFresh = Boolean(effectiveReviewReference && Number.isFinite(reviewAgeDays) && reviewAgeDays >= -0.1 && reviewAgeDays <= 365);
+        const reviewFindings = recordedReview ? authData.securityFindings.filter(item => item.workspaceId === workspaceId && item.reviewId === recordedReview.id) : [];
+        const activeFinding = item => item.status !== 'verified' && !(item.status === 'risk_accepted' && new Date(item.riskAcceptance?.expiresAt) > now);
+        const blockingSecurityFindings = reviewFindings.filter(item => ['critical', 'high'].includes(item.severity) && activeFinding(item)); const acceptedBlockingFindings = reviewFindings.filter(item => ['critical', 'high'].includes(item.severity) && item.status === 'risk_accepted' && !activeFinding(item)); const advisorySecurityFindings = reviewFindings.filter(item => ['medium', 'low'].includes(item.severity) && activeFinding(item));
         const releaseSupport = releaseSupportStatus({ version, releasedAt, endOfSupportAt, now });
         const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
         const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
@@ -631,7 +673,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
           { id: 'audit', category: '证据治理', label: '审计链完整性', status: audit.valid ? 'pass' : 'block', detail: audit.valid ? `${audit.checked} 条审计事件哈希链完整。` : `审计链异常：${audit.brokenEventId ? `事件 ${audit.brokenEventId}` : '完整性校验失败'}`, action: audit.valid ? null : '停止发布并调查审计链异常' },
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
-          { id: 'security_review', category: '访问安全', label: '一年内外部安全评审', status: securityReviewFresh ? 'pass' : 'warning', detail: securityReviewFresh ? `独立安全评审距今 ${reviewAgeDays.toFixed(0)} 天，参考编号已登记。` : securityReviewReference ? '已登记评审参考，但评审日期缺失、无效或超过一年。' : '尚未登记独立安全评审结果。', action: securityReviewFresh ? null : '完成独立安全评审，并配置参考编号与 SHIPWITNESS_SECURITY_REVIEWED_AT' },
+          { id: 'security_review', category: '访问安全', label: '一年内外部安全评审', status: securityReviewFresh ? 'pass' : 'warning', detail: securityReviewFresh ? `独立安全评审距今 ${reviewAgeDays.toFixed(0)} 天，参考编号已登记。` : effectiveReviewReference ? '已登记评审参考，但评审日期缺失、无效或超过一年。' : '尚未登记独立安全评审结果。', action: securityReviewFresh ? null : '在安全评审中心登记报告与完成日期，或配置对应部署证据' },
+          { id: 'security_findings', category: '访问安全', label: '安全发现整改', status: blockingSecurityFindings.length ? 'block' : acceptedBlockingFindings.length || advisorySecurityFindings.length ? 'warning' : 'pass', detail: blockingSecurityFindings.length ? `${blockingSecurityFindings.length} 个严重或高危发现尚未通过复测。` : acceptedBlockingFindings.length || advisorySecurityFindings.length ? `${acceptedBlockingFindings.length} 个严重风险临时接受，${advisorySecurityFindings.length} 个中低风险待处理。` : recordedReview ? `${reviewFindings.length} 个发现均已关闭或评审未发现问题。` : '尚无结构化安全发现；登记评审后系统会跟踪整改与复测。', action: blockingSecurityFindings.length ? '修复严重和高危发现并登记复测证据' : acceptedBlockingFindings.length || advisorySecurityFindings.length ? '在风险接受到期前完成修复，并处理剩余中低风险' : null },
           { id: 'support_lifecycle', category: '版本治理', label: '版本支持周期', status: releaseSupport.status === 'supported' ? 'pass' : releaseSupport.channel === 'stable' ? 'block' : 'warning', detail: releaseSupport.reason, action: releaseSupport.status === 'supported' ? null : releaseSupport.channel === 'stable' ? '升级到仍在支持周期内的稳定版本' : '正式公网发布前升级到带发布日期和停止支持日期的 1.x 稳定版本' },
           { id: 'email', category: '通知送达', label: '邮件通知', status: emailEnabled && emailFailures === 0 ? 'pass' : 'warning', detail: !emailEnabled ? 'SMTP 未启用，邀请、失败和审批需要成员主动查看。' : emailFailures ? `${emailFailures} 封邮件最终投递失败。` : 'SMTP 已启用且没有最终失败投递。', action: !emailEnabled ? '配置 TLS SMTP 并发送测试邮件' : emailFailures ? '处理失败邮件并重试' : null },
           { id: 'github_webhook', category: '代码证据', label: 'GitHub 自动同步', status: !githubProjects || githubWebhookSecret ? 'pass' : 'warning', detail: !githubProjects ? '当前没有项目启用 GitHub 集成。' : githubWebhookSecret ? `${githubProjects} 个 GitHub 项目已启用签名事件接收。` : `${githubProjects} 个 GitHub 项目仍依赖人工同步。`, action: githubProjects && !githubWebhookSecret ? '配置 SHIPWITNESS_GITHUB_WEBHOOK_SECRET 并在仓库订阅事件' : null },

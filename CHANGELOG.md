@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.25
+
+- Added a workspace security-review center for independent report metadata and structured findings.
+- Added severity-aware release blocking, remediation states, retest evidence, and owner-only risk acceptance limited to 90 days.
+- Added PostgreSQL persistence, hash-chained audit events, browser management UI, and readiness integration for security remediation evidence.
+
 ## 0.4.0-dev.24
 
 - Published a machine-readable 1.x lifecycle policy through `GET /api/support`.
