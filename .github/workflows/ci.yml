@@ -37,3 +37,4 @@ jobs:
       - run: npm run security:audit
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+      - run: npm run smoke:self

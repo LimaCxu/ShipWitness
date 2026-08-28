@@ -39,6 +39,7 @@
 - [x] Acceptance credential lifetime, expiration visibility, and fail-closed execution enforcement
 - [x] Proactive acceptance-credential lifecycle alerts and readiness integration
 - [x] Bounded, expiring login throttling with standards-based retry guidance
+- [x] Isolated delivery self-smoke covering real browser evidence, release gate, and signed dossier
 
 ## 1.0 — Self-hosted release gate
 

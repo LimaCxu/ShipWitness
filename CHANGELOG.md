@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.52
+
+- Added an isolated one-command delivery smoke test that exercises the real Chromium executor, screenshot evidence, deterministic release gate, and Ed25519 signed-dossier verification without touching existing workspace data.
+- The full self-smoke now runs after the PostgreSQL suite in GitHub Actions, preventing API-only checks from standing in for the customer-facing evidence loop.
+
 ## 0.4.0-dev.51
 
 - Replaced ad-hoc login attempt tracking with a tested bounded throttle that resets expired windows correctly and removes stale identities.

@@ -28,6 +28,8 @@ For GitHub automatic synchronization, generate a separate random Webhook secret,
 
 `GET /api/health` returns the active storage engine and database readiness. The application container waits for PostgreSQL health before starting, and pending numbered SQL migrations run automatically under an advisory lock.
 
+Before handing an artifact to a customer, run `npm run smoke:self` from the exact extracted release directory. It creates an isolated temporary workspace, performs real Chromium assertions against ShipWitness itself, hashes screenshot evidence, passes the deterministic release gate, verifies an Ed25519 signed dossier, and removes all temporary state. A successful command is delivery evidence for the packaged runtime, not a substitute for testing the customer's own application path.
+
 Before requesting a public-production decision, record the independent review evidence and stable-release lifecycle metadata:
 
 ```bash
