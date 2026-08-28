@@ -159,6 +159,33 @@ test('invalid payloads return a useful 400 response', async t => {
   assert.match(longPassword.body.error, /128/);
 });
 
+test('starter kit creates a project, executable contracts and first run atomically', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-starter-'));
+  const server = createApp({ storeFile: join(folder, 'store.json'), artifactsDir: join(folder, 'evidence') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+
+  const kits = await authRequest(base, '/api/starter-kits');
+  assert.equal(kits.status, 200);
+  assert.deepEqual(kits.body.map(item => item.id), ['website', 'dashboard', 'login']);
+  const invalid = await authRequest(base, '/api/starter-kits/apply', { method: 'POST', body: JSON.stringify({ kitId: 'website', name: '非法路径', repo: folder, url: base, startPath: '//evil.test', expectedText: 'ShipWitness' }) });
+  assert.equal(invalid.status, 400);
+
+  const applied = await authRequest(base, '/api/starter-kits/apply', { method: 'POST', body: JSON.stringify({ kitId: 'website', name: '官网验收', repo: folder, url: base, branch: 'main', startPath: '/', expectedText: 'ShipWitness', requirement: '确认官网具备发布基线' }) });
+  assert.equal(applied.status, 201);
+  assert.equal(applied.body.contracts.length, 2);
+  assert.equal(applied.body.run.criteria.length, 2);
+  assert.equal(applied.body.run.status, 'queued');
+  assert.equal((await authRequest(base, '/api/projects')).body.length, 1);
+  assert.equal((await authRequest(base, `/api/contracts?projectId=${applied.body.project.id}`)).body.length, 2);
+  const executed = await authRequest(base, `/api/runs/${applied.body.run.id}/execute`, { method: 'POST' });
+  assert.equal(executed.status, 200);
+  assert.equal(executed.body.execution.verdict, 'passed');
+  const audit = await authRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'starter_kit.applied' && item.entityId === applied.body.project.id));
+});
+
 test('run execution is claimed atomically and rejects a concurrent duplicate', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-concurrency-'));
   let releaseExecution; const blocked = new Promise(resolve => { releaseExecution = resolve; });

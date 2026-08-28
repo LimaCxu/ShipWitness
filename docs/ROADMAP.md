@@ -21,6 +21,7 @@
 - [x] Hash-chained audit timeline and evidence-gated approvals
 - [x] Versioned coding-agent handoff package and GitHub Issue adapter
 - [x] PostgreSQL storage, versioned migrations, JSON import, and health checks
+- [x] First-use wizard with executable acceptance starter kits and immediate evidence capture
 
 ## 1.0 — Self-hosted release gate
 

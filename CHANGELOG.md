@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.13
+
+- Added a first-use wizard with website, dashboard, and login acceptance starter kits.
+- Starter kits atomically create the project, executable versioned contracts, and the first immutable run snapshot.
+- Added optional one-click preflight and browser execution so a new workspace can produce real screenshot evidence immediately.
+
 ## 0.4.0-dev.12
 
 - Added hashed, one-time workspace invitation links with configurable expiry and owner revocation.

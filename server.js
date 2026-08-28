@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.12';
+const serviceVersion = '0.4.0-dev.13';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -64,6 +64,19 @@ const normalizedEmail = value => {
 };
 
 const maskedEmail = value => { const [local, domain] = String(value).split('@'); return `${local.slice(0, 2)}${local.length > 2 ? '***' : '*'}@${domain}`; };
+
+const starterKits = [
+  { id: 'website', name: '官网与落地页', description: '确认页面能打开、主体可见，并出现最关键的品牌或业务文字。', icon: 'WEB', contracts: 2 },
+  { id: 'dashboard', name: '后台与工作台', description: '确认工作台入口可访问、主内容区域可见，并出现核心模块名称。', icon: 'B2B', contracts: 2 },
+  { id: 'login', name: '登录与账号入口', description: '确认登录页身份明确、密码输入框可见，并出现正确的登录提示。', icon: 'AUTH', contracts: 2 }
+];
+
+const starterContracts = ({ kitId, startPath, expectedText }) => {
+  const identity = { code: 'PAGE-01', title: '页面身份正确', description: `打开 ${startPath} 后，页面必须出现“${expectedText}”。`, category: '业务流程', severity: 'blocker', steps: [{ action: 'goto', path: startPath }, { action: 'expectText', selector: 'body', value: expectedText }] };
+  if (kitId === 'login') return [identity, { code: 'AUTH-01', title: '密码入口可用', description: '登录页必须显示可操作的密码输入框。', category: '安全', severity: 'blocker', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector: 'input[type="password"]' }] }];
+  const selector = kitId === 'dashboard' ? 'main' : 'body';
+  return [identity, { code: kitId === 'dashboard' ? 'DASH-01' : 'VIEW-01', title: kitId === 'dashboard' ? '工作台主体可见' : '页面主体可见', description: kitId === 'dashboard' ? '页面必须渲染可见的主工作区。' : '页面主体必须完成渲染并可见。', category: '可用性', severity: 'major', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector }] }];
+};
 
 const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
@@ -595,6 +608,31 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/webhook-deliveries') {
         requireRole(['owner']);
         return json(res, 200, authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/starter-kits') return json(res, 200, starterKits);
+      if (req.method === 'POST' && url.pathname === '/api/starter-kits/apply') {
+        const input = await body(req); const kit = starterKits.find(item => item.id === input.kitId);
+        if (!kit) return json(res, 400, { error: '验收启动包无效' });
+        const repoPath = required(input.repo, '项目目录', 4096);
+        const targetUrl = validateTargetUrl(required(input.url, '测试网址', 2048), allowedTargetOrigins).href;
+        const startPath = required(input.startPath || '/', '起始路径', 2048);
+        if (!startPath.startsWith('/') || startPath.startsWith('//')) return json(res, 400, { error: '起始路径必须是站内路径，例如 / 或 /login' });
+        const expectedText = required(input.expectedText, '预期页面文字', 500);
+        const definitions = starterContracts({ kitId: kit.id, startPath, expectedText }).map(item => ({ ...item, steps: normalizeSteps(item.steps) }));
+        const created = await store.update(data => {
+          data.contracts ||= [];
+          const now = new Date().toISOString();
+          const project = { id: createId('prj'), workspaceId, name: required(input.name, '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || '').trim(), starterKitId: kit.id, updatedAt: now, createdAt: now };
+          data.projects.push(project);
+          const contracts = definitions.map(item => ({ ...item, id: createId('ctr'), workspaceId, projectId: project.id, enabled: true, version: 1, createdAt: now, updatedAt: now }));
+          data.contracts.unshift(...contracts);
+          const criteria = contracts.map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: structuredClone(item.steps), version: item.version }));
+          const run = { id: createId('run'), workspaceId, projectId: project.id, requirement: required(input.requirement || `验证${project.name}的${kit.name}发布基线`, '原始需求'), criteria, status: 'queued', attemptNumber: 1, createdByUserId: currentUser.id, starterKitId: kit.id, createdAt: now };
+          data.runs.unshift(run);
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'starter_kit.applied', entityType: 'project', entityId: project.id, details: { kitId: kit.id, contractCount: contracts.length, runId: run.id }, at: now });
+          return { project, contracts, run, kit };
+        });
+        return json(res, 201, created);
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'POST' && url.pathname === '/api/projects') {

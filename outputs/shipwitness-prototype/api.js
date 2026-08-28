@@ -30,6 +30,7 @@ document.querySelector('.member-section .section-title small').textContent = '�
 memberForm.innerHTML = '<div><input id="memberName" placeholder="成员姓名（可选）"><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select><select id="invitationExpiry"><option value="24">24 小时有效</option><option value="72" selected>3 天有效</option><option value="168">7 天有效</option></select></div><button>生成邀请链接</button><small>链接只显示一次；成员接受后自行设置密码。</small>';
 memberList.insertAdjacentHTML('afterend', '<div id="invitationList" class="invitation-list"></div>');
 memberForm.insertAdjacentHTML('afterend', '<div class="one-time-secret" id="invitationSecret" hidden></div>');
+document.body.insertAdjacentHTML('beforeend', `<dialog id="starterDialog" class="starter-dialog"><form id="starterForm"><header><div><span>首次使用向导</span><h2>创建第一个真实验收</h2><p>选择场景并填写目标，系统会一次创建项目、可执行标准和首个验收任务。</p></div><button type="button" id="closeStarter" aria-label="关闭">×</button></header><section><div class="starter-step"><b>1</b><span>选择验收启动包</span></div><div id="starterKitList" class="starter-kit-list"></div></section><section><div class="starter-step"><b>2</b><span>连接你的测试项目</span></div><div class="starter-grid"><label><span>项目名称</span><input id="starterName" required placeholder="例如 客户管理后台"></label><label><span>代码分支</span><input id="starterBranch" value="main" required></label><label class="wide"><span>本机项目目录</span><input id="starterRepo" required placeholder="/Users/you/Projects/my-app"></label><label class="wide"><span>测试网址</span><input id="starterUrl" type="url" required placeholder="http://127.0.0.1:3000"></label><label><span>起始页面</span><input id="starterPath" value="/" required></label><label><span>页面必须出现的文字</span><input id="starterExpectedText" required placeholder="例如 登录 或产品名称"></label><label class="wide"><span>这次发布要证明什么</span><textarea id="starterRequirement" rows="2" required placeholder="用业务语言描述本次开发目标"></textarea></label></div></section><footer><label class="starter-execute"><input id="starterExecute" type="checkbox" checked><span>环境就绪后立即执行并保存截图证据</span></label><button type="submit" id="applyStarter">创建并开始验收</button></footer><p id="starterError" class="auth-error" hidden></p></form></dialog>`);
 let authMode = 'login';
 let currentSession = null;
 let invitationToken = null;
@@ -185,8 +186,8 @@ function renderLiveDashboard(project, run) {
     overline.textContent = '项目 / 尚未接入';
     caseStrip.innerHTML = '<button class="case-chip active" disabled><i class="hold"></i><span>没有项目数据<small>先完成项目接入</small></span><b>—</b></button>';
     overallVerdict.textContent = '等待接入'; verdictSummary.textContent = '保存项目目录和测试网址后开始验收。';
-    nextAction.innerHTML = '<span class="mini-label">下一步</span><h3>接入第一个项目</h3><p>连接代码目录、测试网址和返工方式。</p><button class="decide" id="dashboardConnect">检查项目接入 <span>→</span></button>';
-    document.querySelector('#dashboardConnect').onclick = () => toggleConnect(true);
+    nextAction.innerHTML = '<span class="mini-label">推荐开始方式</span><h3>5 分钟创建首次验收</h3><p>启动包会生成真实项目、可执行标准和首个任务。</p><button class="decide" id="dashboardStarter">使用首次向导 <span>→</span></button><button class="text-action" id="dashboardConnect">手动接入项目</button>';
+    document.querySelector('#dashboardStarter').onclick = () => openStarter(); document.querySelector('#dashboardConnect').onclick = () => toggleConnect(true);
     return;
   }
   heading.innerHTML = `${escapeHtml(project.name)} <em>发布验收</em>`;
@@ -239,6 +240,31 @@ function renderLiveDashboard(project, run) {
   document.querySelector('#dashboardContracts')?.addEventListener('click', () => contractsBtn.click()); document.querySelector('#dashboardExport')?.addEventListener('click', () => downloadDossier.click()); document.querySelector('#dashboardSign')?.addEventListener('click', async () => { try { const signedDocument = await api(`/api/dossiers/${run.id}/sign`, { method: 'POST' }); const blob = new Blob([JSON.stringify(signedDocument, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `ShipWitness-signed-${run.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 500); toast('签名卷宗已生成，可用 CLI 离线验签'); } catch (error) { toast(error.message); } });
 }
 
+let starterKitsCache = [];
+async function openStarter() {
+  starterError.hidden = true;
+  starterKitsCache = starterKitsCache.length ? starterKitsCache : await api('/api/starter-kits');
+  starterKitList.innerHTML = starterKitsCache.map((kit, index) => `<label><input type="radio" name="starterKit" value="${kit.id}" ${index === 0 ? 'checked' : ''}><span><b>${escapeHtml(kit.icon)}</b><strong>${escapeHtml(kit.name)}</strong><small>${escapeHtml(kit.description)}</small></span></label>`).join('');
+  if (!starterDialog.open) starterDialog.showModal();
+}
+closeStarter.onclick = () => { sessionStorage.setItem('shipwitness.starter.dismissed', '1'); starterDialog.close(); };
+starterForm.onsubmit = async event => {
+  event.preventDefault(); applyStarter.disabled = true; applyStarter.textContent = '正在创建启动包…'; starterError.hidden = true;
+  try {
+    const kitId = new FormData(starterForm).get('starterKit');
+    const created = await api('/api/starter-kits/apply', { method: 'POST', body: JSON.stringify({ kitId, name: starterName.value, repo: starterRepo.value, url: starterUrl.value, branch: starterBranch.value, startPath: starterPath.value, expectedText: starterExpectedText.value, requirement: starterRequirement.value }) });
+    backendProjectId = created.project.id; backendProject = created.project; backendRunId = created.run.id;
+    applyStarter.textContent = '正在检查测试环境…';
+    const preflight = await api(`/api/projects/${created.project.id}/preflight`, { method: 'POST' });
+    const executable = preflight.checks.url.status === 'ready' && preflight.checks.browser.status === 'ready';
+    if (starterExecute.checked && executable) { applyStarter.textContent = '正在执行浏览器验收…'; await api(`/api/runs/${created.run.id}/execute`, { method: 'POST' }); }
+    starterDialog.close(); sessionStorage.removeItem('shipwitness.starter.dismissed'); await bootstrapBackend();
+    if (starterExecute.checked && executable) { await loadRunTask(); toast('首次验收已完成，截图和步骤证据已保存'); }
+    else { toggleConnect(true); toast(executable ? '首个任务已创建，可随时执行' : '项目已创建，请根据环境检查结果完成接入'); }
+  } catch (error) { starterError.textContent = error.message; starterError.hidden = false; }
+  finally { applyStarter.disabled = false; applyStarter.textContent = '创建并开始验收'; }
+};
+
 async function bootstrapBackend() {
   try {
     await api('/api/health');
@@ -266,6 +292,7 @@ async function bootstrapBackend() {
       backendRunId = projectRuns[0]?.id || runs[0].id;
     }
     renderLiveDashboard(saved, projectRuns[0]);
+    if (!saved && !sessionStorage.getItem('shipwitness.starter.dismissed')) openStarter().catch(error => toast(error.message));
   } catch {
     setServiceState(false, '后端未启动');
     renderLiveDashboard(null, null);
