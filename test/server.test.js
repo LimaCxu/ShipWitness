@@ -255,16 +255,47 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   assert.equal(systemStatus.body.audit.valid, true);
   assert.equal(systemStatus.body.members, 2);
 
+  const resetPassword = await authRequest(base, `/api/members/${member.body.membershipId}/password`, { method: 'POST', body: JSON.stringify({ newPassword: 'temporary-reset-789' }) });
+  assert.equal(resetPassword.status, 200);
+  assert.ok(resetPassword.body.sessionsRevoked >= 1);
+  assert.equal((await memberOwnerRequest(base, '/api/session')).status, 401);
+  const resetLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'temporary-reset-789' }) });
+  assert.equal(resetLogin.status, 200);
+  assert.equal(resetLogin.body.user.mustChangePassword, true);
+  const resetCookie = resetLogin.headers.get('set-cookie').split(';')[0];
+  const resetRequest = authenticatedRequest(resetCookie);
+  assert.equal((await resetRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: '不应创建', scopes: ['gate:read'] }) })).status, 428);
+  assert.equal((await resetRequest(base, '/api/account/password', { method: 'POST', body: JSON.stringify({ currentPassword: 'temporary-reset-789', newPassword: 'member-password-999' }) })).status, 200);
+  assert.equal((await resetRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: '改密后可创建', scopes: ['gate:read'] }) })).status, 201);
+
+  const store = new JsonStore(join(folder, 'store.json'));
+  await store.update(data => data.runs.push({ id: 'run_failed_alert', workspaceId: originalWorkspaceId, status: 'failed', createdAt: new Date().toISOString() }));
+  const refreshedAlerts = await authRequest(base, '/api/alerts/refresh', { method: 'POST' });
+  assert.equal(refreshedAlerts.status, 200);
+  const failedRunAlert = refreshedAlerts.body.find(item => item.sourceKey === 'runs.failed');
+  assert.equal(failedRunAlert.status, 'open');
+  const acknowledged = await authRequest(base, `/api/alerts/${failedRunAlert.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'acknowledged' }) });
+  assert.equal(acknowledged.body.status, 'acknowledged');
+  const prematureResolution = await authRequest(base, `/api/alerts/${failedRunAlert.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved', resolution: '尚未修复' }) });
+  assert.equal(prematureResolution.status, 409);
+  await store.update(data => { data.runs.find(item => item.id === 'run_failed_alert').status = 'completed'; });
+  const resolvedAlerts = await authRequest(base, '/api/alerts/refresh', { method: 'POST' });
+  assert.equal(resolvedAlerts.body.find(item => item.id === failedRunAlert.id).status, 'resolved');
+
   const removed = await authRequest(base, `/api/members/${member.body.membershipId}`, { method: 'DELETE' });
   assert.equal(removed.status, 200);
-  assert.equal(removed.body.revokedApiKeys, 1);
-  assert.equal((await memberOwnerRequest(base, '/api/session')).status, 401);
+  assert.equal(removed.body.revokedApiKeys, 2);
+  assert.equal((await resetRequest(base, '/api/session')).status, 401);
   const revokedMachineKey = await request(base, '/api/gates/unknown', { headers: { authorization: `Bearer ${memberKey.body.token}` } });
   assert.equal(revokedMachineKey.status, 401);
 
   const auditAfterLifecycle = await authRequest(base, '/api/audit');
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.role_changed'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.password_changed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.password_reset'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.opened'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.acknowledged'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.resolved'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.removed'));
 });
 

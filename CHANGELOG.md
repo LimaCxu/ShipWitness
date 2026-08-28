@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.9
+
+- Added owner-controlled member password reset, global session revocation, and mandatory temporary-password replacement.
+- Added persisted workspace alerts for stale or failed runs, failed Webhook delivery, and audit-chain integrity.
+- Added alert acknowledgement, recovery-based resolution, audit events, and a management-center alert UI.
+
 ## 0.4.0-dev.8
 
 - Added owner-controlled member role changes and removal with last-owner protection.

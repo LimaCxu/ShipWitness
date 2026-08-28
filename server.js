@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.8';
+const serviceVersion = '0.4.0-dev.9';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -63,7 +63,7 @@ const normalizedEmail = value => {
   return email;
 };
 
-const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt });
+const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
 const dossierPayload = (data, run, workspaceId) => {
   const auditEvents = data.auditEvents.filter(item => item.workspaceId === workspaceId);
@@ -119,6 +119,38 @@ async function executeRun(project, run, allowedOrigins) {
     summary: canContinue ? '基础环境证据已收集；业务验收仍需浏览器执行器。' : '基础环境未通过，验收被阻断。'
   };
 }
+
+const alertSignals = (data, workspaceId, now = Date.now()) => {
+  const runs = data.runs.filter(item => item.workspaceId === workspaceId);
+  const deliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId);
+  const signals = [];
+  const audit = verifyAuditChain(data.auditEvents.filter(item => item.workspaceId === workspaceId));
+  const staleRuns = runs.filter(item => item.status === 'running' && now - new Date(item.startedAt || 0).getTime() > 15 * 60_000);
+  const failedRuns = runs.filter(item => item.status === 'failed');
+  const failedDeliveries = deliveries.filter(item => item.status === 'failed');
+  if (!audit.valid) signals.push({ sourceKey: 'audit.integrity', severity: 'critical', title: '审计链完整性异常', detail: `发现断点 ${audit.brokenEventId || 'unknown'}，暂停依赖该审计链的发布决策。`, count: 1 });
+  if (staleRuns.length) signals.push({ sourceKey: 'runs.stale', severity: 'critical', title: '验收任务长时间未结束', detail: `${staleRuns.length} 个任务运行超过 15 分钟，需要检查执行器或重新接管。`, count: staleRuns.length });
+  if (failedDeliveries.length) signals.push({ sourceKey: 'webhooks.failed', severity: 'critical', title: 'Webhook 投递最终失败', detail: `${failedDeliveries.length} 个发布通知已耗尽重试次数，需要检查目标地址。`, count: failedDeliveries.length });
+  if (failedRuns.length) signals.push({ sourceKey: 'runs.failed', severity: 'warning', title: '存在失败的验收任务', detail: `${failedRuns.length} 个任务执行失败，请查看证据和返工记录。`, count: failedRuns.length });
+  return signals;
+};
+
+const refreshAlerts = (data, workspaceId, actorUserId) => {
+  const now = new Date().toISOString(); const signals = alertSignals(data, workspaceId);
+  for (const signal of signals) {
+    let alert = data.alerts.find(item => item.workspaceId === workspaceId && item.sourceKey === signal.sourceKey && item.status !== 'resolved');
+    if (!alert) {
+      alert = { id: createId('alt'), workspaceId, ...signal, status: 'open', createdAt: now, lastSeenAt: now };
+      data.alerts.push(alert); appendAudit(data, { workspaceId, actorUserId, action: 'alert.opened', entityType: 'alert', entityId: alert.id, details: { sourceKey: alert.sourceKey, severity: alert.severity }, at: now });
+    } else Object.assign(alert, signal, { lastSeenAt: now });
+  }
+  const activeKeys = new Set(signals.map(item => item.sourceKey));
+  for (const alert of data.alerts.filter(item => item.workspaceId === workspaceId && item.status !== 'resolved' && !activeKeys.has(item.sourceKey))) {
+    alert.status = 'resolved'; alert.resolvedAt = now; alert.resolvedByUserId = actorUserId; alert.resolution = '系统在刷新时确认异常条件已消失';
+    appendAudit(data, { workspaceId, actorUserId, action: 'alert.resolved', entityType: 'alert', entityId: alert.id, details: { sourceKey: alert.sourceKey, automatic: true }, at: now });
+  }
+  return data.alerts.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+};
 
 export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
@@ -230,12 +262,14 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         if (input.currentPassword === input.newPassword) return json(res, 400, { error: '新密码不能与当前密码相同' });
         const passwordHash = await hashPassword(input.newPassword); const now = new Date().toISOString();
         await store.update(data => {
-          const user = data.users.find(item => item.id === currentUser.id); user.passwordHash = passwordHash; user.passwordChangedAt = now;
+          const user = data.users.find(item => item.id === currentUser.id); user.passwordHash = passwordHash; user.passwordChangedAt = now; user.mustChangePassword = false;
           data.sessions = data.sessions.filter(item => item.userId !== currentUser.id || item.tokenHash === cookieTokenHash);
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'user.password_changed', entityType: 'user', entityId: currentUser.id, at: now });
         });
         return json(res, 200, { ok: true, passwordChangedAt: now, otherSessionsRevoked: true });
       }
+
+      if (currentUser?.mustChangePassword && !['GET', 'HEAD'].includes(req.method) && url.pathname !== '/api/alerts/refresh') return json(res, 428, { error: '管理员已重置密码，请先修改临时密码' });
 
       const requireRole = roles => {
         if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
@@ -278,6 +312,21 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         });
         return json(res, 201, member);
       }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'members' && segments[2] && segments[3] === 'password') {
+        requireRole(['owner']);
+        const input = await body(req); const passwordHash = await hashPassword(input.newPassword); const now = new Date().toISOString();
+        const result = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.userId === currentUser.id) throw Object.assign(new Error('请通过账户安全修改自己的密码'), { status: 400 });
+          const user = data.users.find(item => item.id === target.userId); user.passwordHash = passwordHash; user.passwordChangedAt = now; user.mustChangePassword = true;
+          const sessionsBefore = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== target.userId);
+          const sessionsRevoked = sessionsBefore - data.sessions.length;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.password_reset', entityType: 'user', entityId: target.userId, details: { membershipId: target.id, sessionsRevoked }, at: now });
+          return { membershipId: target.id, userId: target.userId, passwordResetAt: now, sessionsRevoked, mustChangePassword: true };
+        });
+        return json(res, 200, result);
+      }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'members' && segments[2]) {
         requireRole(['owner']);
         const input = await body(req); const role = input.role;
@@ -316,6 +365,34 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           webhooks: { pending: deliveries.filter(item => ['queued', 'retrying', 'sending'].includes(item.status)).length, failed: deliveries.filter(item => item.status === 'failed').length },
           checkedAt: new Date(now).toISOString()
         });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/alerts/refresh') {
+        requireRole(['owner', 'approver']);
+        const alerts = await store.update(data => refreshAlerts(data, workspaceId, currentUser.id));
+        return json(res, 200, alerts);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/alerts') {
+        requireRole(['owner', 'approver']);
+        const status = url.searchParams.get('status');
+        const alerts = authData.alerts.filter(item => item.workspaceId === workspaceId && (!status || item.status === status)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return json(res, 200, alerts);
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'alerts' && segments[2]) {
+        requireRole(['owner', 'approver']);
+        const input = await body(req);
+        if (!['acknowledged', 'resolved'].includes(input.status)) return json(res, 400, { error: '告警状态无效' });
+        const changed = await store.update(data => {
+          const alert = data.alerts.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!alert) throw Object.assign(new Error('告警不存在'), { status: 404 });
+          const now = new Date().toISOString();
+          if (input.status === 'resolved' && alertSignals(data, workspaceId).some(item => item.sourceKey === alert.sourceKey)) throw Object.assign(new Error('异常条件仍然存在，暂时不能解决此告警'), { status: 409 });
+          alert.status = input.status;
+          if (input.status === 'acknowledged') { alert.acknowledgedAt = now; alert.acknowledgedByUserId = currentUser.id; }
+          else { alert.resolvedAt = now; alert.resolvedByUserId = currentUser.id; alert.resolution = required(input.resolution, '解决说明', 500); }
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: `alert.${input.status}`, entityType: 'alert', entityId: alert.id, details: { sourceKey: alert.sourceKey }, at: now });
+          return alert;
+        });
+        return json(res, 200, changed);
       }
       if (req.method === 'GET' && url.pathname === '/api/audit') {
         requireRole(['owner', 'approver']);
