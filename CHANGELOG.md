@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.15
+
+- Added optional TLS-first SMTP notifications for workspace invitations, failed acceptance runs, and passed runs awaiting approval.
+- Added encrypted-at-rest email payloads, atomic claims, interrupted-send recovery, exponential retry, terminal failure audit events, and owner-triggered retry.
+- Added owner-visible delivery status, configuration tests, public task deep links, and retention cleanup for terminal email records.
+
 ## 0.4.0-dev.14
 
 - Added a role-aware team inbox for queued runs, stale recovery, failed evidence, release approval, focused retest, and failed Webhook delivery.

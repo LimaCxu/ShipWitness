@@ -23,6 +23,7 @@
 - [x] PostgreSQL storage, versioned migrations, JSON import, and health checks
 - [x] First-use wizard with executable acceptance starter kits and immediate evidence capture
 - [x] Role-aware team inbox with personal unread state and direct task handling
+- [x] Optional SMTP notification queue with encrypted payloads, retry, audit, and delivery management
 
 ## 1.0 — Self-hosted release gate
 

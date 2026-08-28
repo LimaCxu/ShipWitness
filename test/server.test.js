@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createApp } from '../server.js';
 import { encryptSecret } from '../lib/signing.js';
 import { JsonStore } from '../lib/store.js';
+import { smtpConfig } from '../lib/email.js';
 
 const signingSecret = Buffer.alloc(32, 7).toString('base64');
 
@@ -21,6 +22,13 @@ const setupOwner = async base => {
 };
 
 const authenticatedRequest = cookie => async (base, path, options = {}) => request(base, path, { ...options, headers: { 'content-type': 'application/json', cookie, ...options.headers } });
+
+test('SMTP configuration is disabled by default and rejects partial credentials', () => {
+  assert.deepEqual(smtpConfig({}), { enabled: false });
+  assert.throws(() => smtpConfig({ SHIPWITNESS_SMTP_HOST: 'smtp.example.com' }), /必须同时设置/);
+  assert.throws(() => smtpConfig({ SHIPWITNESS_SMTP_HOST: 'smtp.example.com', SHIPWITNESS_SMTP_FROM: 'notify@example.com', SHIPWITNESS_SMTP_USER: 'user' }), /必须同时配置/);
+  assert.equal(smtpConfig({ SHIPWITNESS_SMTP_HOST: 'smtp.example.com', SHIPWITNESS_SMTP_FROM: 'notify@example.com' }).requireTLS, true);
+});
 
 test('project, preflight, run and dossier API work together', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-'));
@@ -205,6 +213,39 @@ test('team inbox derives actionable work and keeps personal read state', async t
   assert.equal(approval.body.unreadCount, 1);
   assert.equal(approval.body.items[0].type, 'approval');
   assert.equal((await authRequest(base, '/api/inbox/read', { method: 'POST', body: JSON.stringify({ all: true }) })).body.unreadCount, 0);
+});
+
+test('email queue encrypts invitation links and delivers invitation and approval notices', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-email-')); const storeFile = join(folder, 'store.json'); const sent = []; let failEmail = false;
+  const server = createApp({ storeFile, signingSecret, publicUrl: 'https://shipwitness.example', emailRetryBaseMs: 0, emailSender: async message => { if (failEmail) throw new Error('测试 SMTP 不可用'); sent.push(message); return { messageId: `message-${sent.length}` }; }, emailConfiguration: { enabled: true }, artifactsDir: join(folder, 'evidence') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.close(); await server.closeStore(); });
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+
+  const invitation = await authRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'mail-invite@example.com', role: 'member' }) });
+  assert.equal(invitation.body.emailQueued, true);
+  const storedText = JSON.stringify(await new JsonStore(storeFile).read());
+  assert.equal(storedText.includes(invitation.body.token), false);
+  assert.equal((await authRequest(base, '/api/email/status')).body.counts.queued, 1);
+  await server.processEmailDeliveries();
+  assert.equal(sent[0].to, 'mail-invite@example.com');
+  assert.match(sent[0].text, new RegExp(encodeURIComponent(invitation.body.token)));
+  const deliveries = await authRequest(base, '/api/email-deliveries');
+  assert.equal(deliveries.body[0].status, 'delivered');
+  assert.equal('encryptedMessage' in deliveries.body[0], false);
+
+  const applied = await authRequest(base, '/api/starter-kits/apply', { method: 'POST', body: JSON.stringify({ kitId: 'website', name: '邮件审批项目', repo: folder, url: base, startPath: '/', expectedText: 'ShipWitness' }) });
+  await authRequest(base, `/api/runs/${applied.body.run.id}/execute`, { method: 'POST' });
+  await server.processEmailDeliveries();
+  assert.ok(sent.some(message => message.to === 'owner@example.com' && message.subject.includes('等待发布审批')));
+
+  failEmail = true; const testMail = await authRequest(base, '/api/email/test', { method: 'POST' });
+  for (let attempt = 0; attempt < 6; attempt += 1) await server.processEmailDeliveries();
+  const failed = (await authRequest(base, '/api/email-deliveries')).body.find(item => item.id === testMail.body.id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.attempts, 6);
+  failEmail = false; assert.equal((await authRequest(base, `/api/email-deliveries/${failed.id}/retry`, { method: 'POST' })).status, 202);
+  await server.processEmailDeliveries();
+  assert.equal((await authRequest(base, '/api/email-deliveries')).body.find(item => item.id === failed.id).status, 'delivered');
 });
 
 test('run execution is claimed atomically and rejects a concurrent duplicate', async t => {
@@ -438,7 +479,7 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   });
   const preview = await authRequest(base, '/api/retention/preview');
   assert.equal(preview.body.total, 3);
-  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, alerts: 1, invitations: 0 });
+  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, emailDeliveries: 0, alerts: 1, invitations: 0 });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: 'wrong' }) })).status, 409);
   await store.update(data => { data.sessions.find(item => item.id === 'ses_expired_cleanup').id = 'ses_expired_replaced'; });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: preview.body.token }) })).status, 409);

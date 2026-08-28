@@ -19,7 +19,7 @@ Every signed-in user can change their own password under **工作区管理 → �
 
 Owners can reset another member's password from **成员与角色 → 重置密码**. The reset revokes every session for that user across all workspaces. The new value is a temporary password: after signing in, the member can read the workspace but cannot perform write operations until they replace it under **账户安全**. Owners cannot use this route for their own account and must provide the temporary password through a separate secure channel.
 
-ShipWitness does not send email and deliberately exposes no unauthenticated reset endpoint in development releases.
+Optional email notifications do not change password recovery: ShipWitness deliberately exposes no unauthenticated password-reset endpoint or password-reset email in development releases. Owners continue to perform an audited reset and share the temporary password through a separately secured channel.
 
 ## Operations summary
 

@@ -22,7 +22,7 @@ const store = new PostgresStore(databaseUrl);
 try {
   const rotated = await store.update(data => {
     const counts = rotateEncryptedSecrets(data, oldSecret, newSecret); const at = new Date().toISOString();
-    for (const workspace of data.workspaces) appendAudit(data, { workspaceId: workspace.id, action: 'security.master_key_rotated', entityType: 'workspace', entityId: workspace.id, details: { signingKeys: workspace.signingKey ? 1 : 0, webhooks: data.webhooks.filter(item => item.workspaceId === workspace.id && item.encryptedSecret).length, newKeyFingerprint: masterKeyFingerprint(newSecret) }, at });
+    for (const workspace of data.workspaces) appendAudit(data, { workspaceId: workspace.id, action: 'security.master_key_rotated', entityType: 'workspace', entityId: workspace.id, details: { signingKeys: workspace.signingKey ? 1 : 0, webhooks: data.webhooks.filter(item => item.workspaceId === workspace.id && item.encryptedSecret).length, emailDeliveries: data.emailDeliveries.filter(item => item.workspaceId === workspace.id && item.encryptedMessage).length, newKeyFingerprint: masterKeyFingerprint(newSecret) }, at });
     return counts;
   });
   const verified = await store.read(); rotateEncryptedSecrets(structuredClone(verified), newSecret, oldSecret);

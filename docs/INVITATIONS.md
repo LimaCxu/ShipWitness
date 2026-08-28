@@ -4,6 +4,8 @@
 
 Owners enter the intended email, role, and a validity period of 24 hours, 3 days, or 7 days under **成员与角色**. ShipWitness returns the invitation URL once. Only a SHA-256 hash and the final six-character suffix are stored; the original token cannot be recovered later.
 
+When optional SMTP delivery and `SHIPWITNESS_PUBLIC_URL` are configured, the same one-time link is also queued for email delivery. The queued message body is encrypted with the deployment master key, so the usable token is never stored as plaintext. The UI still shows the link once as a manual fallback.
+
 Creating another active invitation for the same workspace and email revokes the older invitation. Owners can also revoke a pending invitation explicitly. Accepted, revoked, and expired invitations remain visible as status history until they become eligible under the workspace operational-data retention policy.
 
 ## Recipient workflow

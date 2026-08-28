@@ -2,7 +2,7 @@
 
 ## Policy boundary
 
-Owners select an operational-data retention period from 30 to 730 days. The policy applies only to expired sessions, terminal Webhook deliveries, resolved alerts, and accepted, revoked, or expired invitations. Active invitations are never eligible. ShipWitness never automatically removes audit events, acceptance runs, issues, release decisions, signed dossiers, or screenshot evidence.
+Owners select an operational-data retention period from 30 to 730 days. The policy applies only to expired sessions, terminal Webhook and email deliveries, resolved alerts, and accepted, revoked, or expired invitations. Active invitations are never eligible. ShipWitness never automatically removes audit events, acceptance runs, issues, release decisions, signed dossiers, or screenshot evidence.
 
 This boundary keeps historical release claims verifiable. Operators who must delete evidence for contractual or legal reasons should export the audit chain, take and verify a backup, document approval outside ShipWitness, and use a separately reviewed procedure.
 

@@ -5,12 +5,13 @@ import { assertRollbackImage, rollbackCommands, rotateEncryptedSecrets } from '.
 
 test('master-key rotation re-encrypts all material without changing plaintext', () => {
   const oldSecret = Buffer.alloc(32, 3).toString('base64'); const newSecret = Buffer.alloc(32, 4).toString('base64');
-  const data = { workspaces: [{ id: 'ws_1', signingKey: createSigningKey(oldSecret) }], webhooks: [{ id: 'wh_1', workspaceId: 'ws_1', encryptedSecret: encryptSecret('whsec_value', oldSecret) }] };
+  const data = { workspaces: [{ id: 'ws_1', signingKey: createSigningKey(oldSecret) }], webhooks: [{ id: 'wh_1', workspaceId: 'ws_1', encryptedSecret: encryptSecret('whsec_value', oldSecret) }], emailDeliveries: [{ id: 'eml_1', workspaceId: 'ws_1', encryptedMessage: encryptSecret('{"subject":"test"}', oldSecret) }] };
   const payload = { runId: 'run_1', verdict: 'passed' }; const before = signPayload(payload, data.workspaces[0].signingKey, oldSecret);
   const oldSigningCiphertext = data.workspaces[0].signingKey.encryptedPrivateKey;
-  assert.deepEqual(rotateEncryptedSecrets(data, oldSecret, newSecret), { workspaces: 1, webhooks: 1 });
+  assert.deepEqual(rotateEncryptedSecrets(data, oldSecret, newSecret), { workspaces: 1, webhooks: 1, emailDeliveries: 1 });
   assert.notEqual(data.workspaces[0].signingKey.encryptedPrivateKey, oldSigningCiphertext);
   assert.equal(decryptSecret(data.webhooks[0].encryptedSecret, newSecret), 'whsec_value');
+  assert.equal(decryptSecret(data.emailDeliveries[0].encryptedMessage, newSecret), '{"subject":"test"}');
   assert.throws(() => decryptSecret(data.webhooks[0].encryptedSecret, oldSecret));
   assert.equal(verifySignedPayload(payload, before), true);
   assert.equal(verifySignedPayload(payload, signPayload(payload, data.workspaces[0].signingKey, newSecret)), true);

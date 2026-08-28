@@ -12,6 +12,7 @@ import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
 import { evaluateReleaseGate } from './lib/release-gate.js';
 import { createSigningKey, decryptSecret, encryptSecret, signPayload, verifySignedPayload } from './lib/signing.js';
 import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
+import { createSmtpSender, smtpConfig } from './lib/email.js';
 import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-policy.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
@@ -21,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.14';
+const serviceVersion = '0.4.0-dev.15';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -64,6 +65,13 @@ const normalizedEmail = value => {
 };
 
 const maskedEmail = value => { const [local, domain] = String(value).split('@'); return `${local.slice(0, 2)}${local.length > 2 ? '***' : '*'}@${domain}`; };
+const htmlEscape = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[character]));
+const normalizedPublicUrl = value => {
+  if (!value) return null;
+  let url; try { url = new URL(value); } catch { throw new Error('SHIPWITNESS_PUBLIC_URL 无效'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('SHIPWITNESS_PUBLIC_URL 必须是无凭据的 HTTP(S) 地址');
+  return url.toString().replace(/\/$/, '');
+};
 
 const starterKits = [
   { id: 'website', name: '官网与落地页', description: '确认页面能打开、主体可见，并出现最关键的品牌或业务文字。', icon: 'WEB', contracts: 2 },
@@ -94,6 +102,9 @@ const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
   }
   if (role === 'owner') for (const delivery of data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed')) {
     items.push({ key: `webhook:${delivery.id}:failed`, type: 'delivery', priority: 'normal', title: '发布通知投递失败', detail: delivery.lastError || 'Webhook 已用尽重试次数', createdAt: delivery.lastAttemptAt || delivery.createdAt, action: { kind: 'automation', id: delivery.id } });
+  }
+  if (role === 'owner') for (const delivery of data.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed')) {
+    items.push({ key: `email:${delivery.id}:failed`, type: 'delivery', priority: 'normal', title: '邮件通知投递失败', detail: delivery.lastError || '邮件已用尽重试次数', createdAt: delivery.lastAttemptAt || delivery.createdAt, action: { kind: 'automation', id: delivery.id } });
   }
   const readKeys = new Set(data.inboxReads.filter(item => item.workspaceId === workspaceId && item.userId === userId).map(item => item.itemKey));
   return items.map(item => ({ ...item, unread: !readKeys.has(item.key) })).sort((a, b) => Number(b.priority === 'high') - Number(a.priority === 'high') || String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -194,19 +205,28 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   const cutoff = new Date(asOf.getTime() - operationalDays * 86400_000);
   const sessions = data.sessions.filter(item => item.workspaceId === workspaceId && new Date(item.expiresAt) < cutoff);
   const webhookDeliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
+  const emailDeliveries = data.emailDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
   const alerts = data.alerts.filter(item => item.workspaceId === workspaceId && item.status === 'resolved' && new Date(item.resolvedAt || item.createdAt) < cutoff);
   const invitations = data.invitations.filter(item => item.workspaceId === workspaceId && (item.acceptedAt || item.revokedAt || new Date(item.expiresAt) <= asOf) && new Date(item.acceptedAt || item.revokedAt || item.expiresAt) < cutoff);
-  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, alerts: alerts.length, invitations: invitations.length };
-  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
+  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, emailDeliveries: emailDeliveries.length, alerts: alerts.length, invitations: invitations.length };
+  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), emailDeliveries: emailDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const token = createHash('sha256').update(JSON.stringify({ workspaceId, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, ids })).digest('hex');
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
+  const resolvedEmailSender = emailSender === undefined ? createSmtpSender(emailConfiguration) : emailSender;
+  const emailEnabled = typeof resolvedEmailSender === 'function';
+  if (emailEnabled && !signingSecret) throw new Error('启用邮件通知时必须配置 SHIPWITNESS_MASTER_KEY');
+  const queueEmail = (data, { workspaceId, to, kind, subject, text, html, entityId }) => {
+    if (!emailEnabled) return null;
+    const now = new Date().toISOString(); const item = { id: createId('eml'), workspaceId, to, kind, encryptedMessage: encryptSecret(JSON.stringify({ to, subject, text, html }), signingSecret), entityId, status: 'queued', attempts: 0, nextAttemptAt: now, createdAt: now };
+    data.emailDeliveries.unshift(item); appendAudit(data, { workspaceId, action: 'email.queued', entityType: 'email_delivery', entityId: item.id, details: { kind, recipient: maskedEmail(to) }, at: now }); return item;
+  };
   const processWebhookDeliveries = async () => {
     const snapshot = await store.read(); const now = new Date();
     const due = snapshot.webhookDeliveries.filter(item => (['queued', 'retrying'].includes(item.status) && new Date(item.nextAttemptAt) <= now) || (item.status === 'sending' && new Date(item.lastAttemptAt || 0) <= new Date(now.getTime() - 5 * 60_000))).slice(0, 10);
@@ -230,6 +250,27 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
     return due.length;
   };
   const webhookTimer = setInterval(() => processWebhookDeliveries().catch(() => undefined), 10_000); webhookTimer.unref();
+  const processEmailDeliveries = async () => {
+    if (!emailEnabled) return 0;
+    const snapshot = await store.read(); const now = new Date();
+    const due = snapshot.emailDeliveries.filter(item => (['queued', 'retrying'].includes(item.status) && new Date(item.nextAttemptAt) <= now) || (item.status === 'sending' && new Date(item.lastAttemptAt || 0) <= new Date(now.getTime() - 5 * 60_000))).slice(0, 10);
+    for (const candidate of due) {
+      const claimed = await store.update(data => {
+        const delivery = data.emailDeliveries.find(item => item.id === candidate.id); const stale = delivery?.status === 'sending' && new Date(delivery.lastAttemptAt || 0) <= new Date(Date.now() - 5 * 60_000);
+        if (!delivery || (!['queued', 'retrying'].includes(delivery.status) && !stale) || (!stale && new Date(delivery.nextAttemptAt) > new Date())) return null;
+        delivery.status = 'sending'; delivery.attempts += 1; delivery.lastAttemptAt = new Date().toISOString(); return { ...delivery };
+      });
+      if (!claimed) continue;
+      try {
+        const message = JSON.parse(decryptSecret(claimed.encryptedMessage, signingSecret)); const response = await resolvedEmailSender(message);
+        await store.update(data => { const delivery = data.emailDeliveries.find(item => item.id === claimed.id); delivery.status = 'delivered'; delivery.deliveredAt = new Date().toISOString(); delivery.messageId = String(response?.messageId || '').slice(0, 300); appendAudit(data, { workspaceId: delivery.workspaceId, action: 'email.delivered', entityType: 'email_delivery', entityId: delivery.id, details: { kind: delivery.kind, attempts: delivery.attempts }, at: delivery.deliveredAt }); });
+      } catch (error) {
+        await store.update(data => { const delivery = data.emailDeliveries.find(item => item.id === claimed.id); delivery.lastError = String(error.message || '邮件投递失败').slice(0, 300); delivery.status = delivery.attempts >= 6 ? 'failed' : 'retrying'; delivery.nextAttemptAt = new Date(Date.now() + Math.min(emailRetryBaseMs * 2 ** (delivery.attempts - 1), 3_600_000)).toISOString(); if (delivery.status === 'failed') appendAudit(data, { workspaceId: delivery.workspaceId, action: 'email.failed', entityType: 'email_delivery', entityId: delivery.id, details: { kind: delivery.kind, attempts: delivery.attempts, error: delivery.lastError } }); });
+      }
+    }
+    return due.length;
+  };
+  const emailTimer = setInterval(() => processEmailDeliveries().catch(() => undefined), 10_000); emailTimer.unref();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -420,9 +461,11 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (user && data.memberships.some(item => item.workspaceId === workspaceId && item.userId === user.id)) throw Object.assign(new Error('该用户已经是工作区成员'), { status: 409 });
           for (const item of data.invitations.filter(item => item.workspaceId === workspaceId && item.email === email && !item.acceptedAt && !item.revokedAt && new Date(item.expiresAt) > now)) { item.revokedAt = now.toISOString(); item.revokedByUserId = currentUser.id; item.revokeReason = 'replaced'; }
           const invitation = { id: createId('inv'), workspaceId, email, suggestedName: String(input.name || '').trim().slice(0, 200), role, tokenHash: sessionTokenHash(token), tokenSuffix: token.slice(-6), expiresAt: new Date(now.getTime() + expiresInHours * 3600_000).toISOString(), createdByUserId: currentUser.id, createdAt: now.toISOString() };
-          data.invitations.unshift(invitation); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'invitation.created', entityType: 'invitation', entityId: invitation.id, details: { email, role, expiresAt: invitation.expiresAt }, at: invitation.createdAt }); return invitation;
+          data.invitations.unshift(invitation); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'invitation.created', entityType: 'invitation', entityId: invitation.id, details: { email, role, expiresAt: invitation.expiresAt }, at: invitation.createdAt });
+          if (publicUrl) { const inviteUrl = `${publicUrl}/?invite=${encodeURIComponent(token)}`; queueEmail(data, { workspaceId, to: email, kind: 'workspace_invitation', entityId: invitation.id, subject: `加入 ${currentWorkspace.name} 的 ShipWitness 工作区`, text: `你被邀请加入 ${currentWorkspace.name}。请在 ${invitation.expiresAt} 前打开：${inviteUrl}`, html: `<p>你被邀请加入 <strong>${htmlEscape(currentWorkspace.name)}</strong>。</p><p><a href="${htmlEscape(inviteUrl)}">接受邀请并设置密码</a></p><p>链接将在 ${htmlEscape(invitation.expiresAt)} 过期，且只能使用一次。</p>` }); }
+          return invitation;
         });
-        const { tokenHash: hidden, ...safe } = created; return json(res, 201, { ...safe, token, invitePath: `/?invite=${encodeURIComponent(token)}` });
+        const { tokenHash: hidden, ...safe } = created; return json(res, 201, { ...safe, token, invitePath: `/?invite=${encodeURIComponent(token)}`, emailQueued: emailEnabled && Boolean(publicUrl) });
       }
       if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'invitations' && segments[2]) {
         requireRole(['owner']);
@@ -579,8 +622,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const preview = retentionPreview(data, workspaceId, asOf);
           if (input.token !== preview.token) throw Object.assign(new Error('数据已经变化，请重新预览后再清理'), { status: 409 });
           if (!preview.total) throw Object.assign(new Error('没有符合条件的运营数据'), { status: 409 });
-          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
-          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
+          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const emailDeliveryIds = new Set(preview.ids.emailDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
+          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.emailDeliveries = data.emailDeliveries.filter(item => !emailDeliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
           const now = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.cleaned', entityType: 'workspace', entityId: workspaceId, details: { cutoff: preview.cutoff, counts: preview.counts, total: preview.total }, at: now });
           return { cleanedAt: now, cutoff: preview.cutoff, counts: preview.counts, total: preview.total };
         });
@@ -643,6 +686,24 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/webhook-deliveries') {
         requireRole(['owner']);
         return json(res, 200, authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/email/status') {
+        requireRole(['owner']); const deliveries = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId);
+        return json(res, 200, { enabled: emailEnabled, publicUrlConfigured: Boolean(publicUrl), counts: { queued: deliveries.filter(item => ['queued', 'retrying', 'sending'].includes(item.status)).length, delivered: deliveries.filter(item => item.status === 'delivered').length, failed: deliveries.filter(item => item.status === 'failed').length } });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/email-deliveries') {
+        requireRole(['owner']);
+        return json(res, 200, authData.emailDeliveries.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100).map(({ encryptedMessage: hidden, to, ...item }) => ({ ...item, recipient: maskedEmail(to) })));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/email/test') {
+        requireRole(['owner']); if (!emailEnabled) return json(res, 409, { error: 'SMTP 邮件通知尚未配置' });
+        const queued = await store.update(data => queueEmail(data, { workspaceId, to: currentUser.email, kind: 'configuration_test', entityId: currentUser.id, subject: 'ShipWitness 邮件通知测试', text: `来自 ${currentWorkspace.name} 的邮件通知配置测试已成功入队。`, html: `<p>来自 <strong>${htmlEscape(currentWorkspace.name)}</strong> 的邮件通知配置测试已成功入队。</p>` }));
+        return json(res, 202, { id: queued.id, status: queued.status, recipient: maskedEmail(currentUser.email) });
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'email-deliveries' && segments[2] && segments[3] === 'retry') {
+        requireRole(['owner']); if (!emailEnabled) return json(res, 409, { error: 'SMTP 邮件通知尚未配置' });
+        const retried = await store.update(data => { const item = data.emailDeliveries.find(delivery => delivery.id === segments[2] && delivery.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('邮件投递不存在'), { status: 404 }); if (item.status !== 'failed') throw Object.assign(new Error('只有最终失败的邮件才能手动重试'), { status: 409 }); item.status = 'retrying'; item.attempts = 0; item.nextAttemptAt = new Date().toISOString(); item.manualRetryAt = item.nextAttemptAt; item.lastError = null; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'email.retried', entityType: 'email_delivery', entityId: item.id, details: { kind: item.kind }, at: item.manualRetryAt }); return item; });
+        return json(res, 202, { id: retried.id, status: retried.status });
       }
       if (req.method === 'GET' && url.pathname === '/api/starter-kits') return json(res, 200, starterKits);
       if (req.method === 'POST' && url.pathname === '/api/starter-kits/apply') {
@@ -788,6 +849,15 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
               issue.timeline.push({ status: issue.status, at: current.completedAt, note: execution.verdict === 'passed' ? '定向复验通过' : `定向复验未通过：${execution.summary}` });
             }
             appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.completed', entityType: 'run', entityId: current.id, details: { verdict: execution.verdict, executor: execution.executor, attemptNumber: current.attemptNumber || 1, recoveryCount: current.recoveryCount || 0 }, at: current.completedAt });
+            if (['passed', 'failed'].includes(execution.verdict)) {
+              const projectName = data.projects.find(item => item.id === current.projectId)?.name || '未命名项目'; const runUrl = publicUrl ? `${publicUrl}/?run=${encodeURIComponent(current.id)}` : null;
+              const recipientIds = new Set(data.memberships.filter(item => item.workspaceId === workspaceId && ['owner', 'approver'].includes(item.role)).map(item => item.userId));
+              for (const user of data.users.filter(item => recipientIds.has(item.id))) {
+                const passed = execution.verdict === 'passed'; const subject = passed ? `${projectName} 等待发布审批` : `${projectName} 验收失败，需要处理`;
+                const summary = passed ? '全部验收标准已有通过证据，请由负责人确认是否发布。' : '至少一条验收路径未通过，请查看证据并创建返工单。';
+                queueEmail(data, { workspaceId, to: user.email, kind: passed ? 'release_approval' : 'run_failed', entityId: current.id, subject, text: `${summary}${runUrl ? `\n打开 ShipWitness：${runUrl}` : ''}`, html: `<p>${htmlEscape(summary)}</p>${runUrl ? `<p><a href="${htmlEscape(runUrl)}">打开验收任务</a></p>` : ''}<p>任务：${htmlEscape(current.id)}</p>` });
+              }
+            }
             return current;
           });
           return json(res, 200, completed);
@@ -981,7 +1051,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
     }
   });
   server.processWebhookDeliveries = processWebhookDeliveries;
-  server.closeStore = async () => { clearInterval(webhookTimer); await store.close?.(); };
+  server.processEmailDeliveries = processEmailDeliveries;
+  server.closeStore = async () => { clearInterval(webhookTimer); clearInterval(emailTimer); await store.close?.(); };
   return server;
 }
 
