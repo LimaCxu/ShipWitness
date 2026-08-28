@@ -1,6 +1,6 @@
 # Internal security review
 
-Status: updated for `0.4.0-dev.24`. This is a maintainer threat-model review, not an independent penetration test or certification.
+Status: updated for `0.4.0-dev.51`. This is a maintainer threat-model review, not an independent penetration test or certification.
 
 ## Trust boundaries
 
@@ -14,7 +14,7 @@ Status: updated for `0.4.0-dev.24`. This is a maintainer threat-model review, no
 
 | Surface | Primary control | Regression evidence |
 | --- | --- | --- |
-| Authentication | scrypt passwords, bounded password length, hashed random sessions, throttling | API authentication tests |
+| Authentication | scrypt passwords, bounded password length, hashed random sessions, bounded expiring login throttling with Retry-After | Authentication unit and API integration tests |
 | Cross-workspace access | Workspace IDs applied to every domain lookup and role-gated administration | workspace isolation tests |
 | Browser CSRF/clickjacking | SameSite=Strict, Origin validation, CSP `frame-ancestors`, X-Frame-Options | API/header tests |
 | Acceptance-target SSRF | Loopback-only default, exact origin allowlist, redirect checks, browser request interception | target-policy tests |

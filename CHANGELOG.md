@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.51
+
+- Replaced ad-hoc login attempt tracking with a tested bounded throttle that resets expired windows correctly and removes stale identities.
+- Throttled login responses now include a machine-readable retry duration and the standard `Retry-After` header.
+
 ## 0.4.0-dev.50
 
 - Runtime health, startup output, support policy, backups, and release metadata now derive the service version from `package.json` instead of a separately maintained constant.

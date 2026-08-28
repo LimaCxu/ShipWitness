@@ -38,6 +38,7 @@
 - [x] Pre-execution credential dependency diagnostics across contracts, project preflight, and run creation
 - [x] Acceptance credential lifetime, expiration visibility, and fail-closed execution enforcement
 - [x] Proactive acceptance-credential lifecycle alerts and readiness integration
+- [x] Bounded, expiring login throttling with standards-based retry guidance
 
 ## 1.0 — Self-hosted release gate
 

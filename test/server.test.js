@@ -254,6 +254,20 @@ test('invalid payloads return a useful 400 response', async t => {
   assert.match(longPassword.body.error, /128/);
 });
 
+test('login throttling returns a bounded retry window after repeated failures', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-throttle-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  await request(base, '/api/setup', { method: 'POST', body: JSON.stringify({ workspaceName: '限流测试', name: '管理员', email: 'throttle@example.com', password: 'correct-horse-battery' }) });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const failed = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'throttle@example.com', password: 'wrong-password' }) });
+    assert.equal(failed.status, 401);
+  }
+  const blocked = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'throttle@example.com', password: 'correct-horse-battery' }) });
+  assert.equal(blocked.status, 429); assert.equal(blocked.headers.get('retry-after'), '900'); assert.equal(blocked.body.retryAfterSeconds, 900);
+});
+
 test('project selection persists per user and workspace', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-project-selection-'));
   const server = createApp({ storeFile: join(folder, 'store.json') });

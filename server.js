@@ -17,7 +17,7 @@ import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
 import { createSmtpSender, smtpConfig } from './lib/email.js';
 import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-policy.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
-import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
+import { clearSessionCookie, createLoginThrottle, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 import { releaseSupportStatus, supportPolicy } from './lib/support.js';
 import { consumeMfaCode, createRecoveryCodes, createTotpSecret, hashRecoveryCode, verifyTotp } from './lib/mfa.js';
 import { BackupManager, currentSchemaVersion } from './lib/backup-manager.js';
@@ -285,12 +285,11 @@ const securityReviewSnapshot = (data, review, workspaceId, asOf = new Date()) =>
   return { review: { id: review.id, provider: review.provider, reference: review.reference, reviewedAt: review.reviewedAt, scope: review.scope, summary: review.summary }, findings, summary: { total: findings.length, critical: findings.filter(item => item.severity === 'critical').length, high: findings.filter(item => item.severity === 'high').length, medium: findings.filter(item => item.severity === 'medium').length, low: findings.filter(item => item.severity === 'low').length, verified: findings.filter(item => item.status === 'verified').length, riskAccepted: findings.filter(activeRiskAcceptance).length, expiredRiskAcceptances: findings.filter(item => item.status === 'risk_accepted' && !activeRiskAcceptance(item)).length, unresolved: findings.filter(item => item.status !== 'verified' && !activeRiskAcceptance(item)).length }, sourceUpdatedAt };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, drillDatabaseUrl = process.env.SHIPWITNESS_DRILL_DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun, backupRoot = process.env.SHIPWITNESS_BACKUP_DIR || join(dirname(storeFile), 'backups'), backupManager: providedBackupManager } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, drillDatabaseUrl = process.env.SHIPWITNESS_DRILL_DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun, backupRoot = process.env.SHIPWITNESS_BACKUP_DIR || join(dirname(storeFile), 'backups'), backupManager: providedBackupManager, loginThrottle = createLoginThrottle() } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const backupManager = providedBackupManager || new BackupManager({ databaseUrl, drillDatabaseUrl, artifactsDir, backupRoot, version, schemaVersion: currentSchemaVersion });
   let verifiedBackupAt = lastVerifiedBackupAt || null;
-  const loginAttempts = new Map();
   const resolvedEmailSender = emailSender === undefined ? createSmtpSender(emailConfiguration) : emailSender;
   const emailEnabled = typeof resolvedEmailSender === 'function';
   if (emailEnabled && !signingSecret) throw new Error('启用邮件通知时必须配置 SHIPWITNESS_MASTER_KEY');
@@ -491,12 +490,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         return json(res, 201, { user: publicUser(created.user), workspace: created.workspace, role: created.membership.role }, { 'set-cookie': sessionCookie(created.token, { secure: secureCookie }) });
       }
       if (req.method === 'POST' && url.pathname === '/api/login') {
-        const input = await body(req); const email = normalizedEmail(input.email); const attemptKey = `${req.socket.remoteAddress}:${email}`; const nowMs = Date.now();
-        const attempt = loginAttempts.get(attemptKey); if (attempt && attempt.count >= 5 && nowMs - attempt.startedAt < 15 * 60_000) return json(res, 429, { error: '登录尝试过多，请 15 分钟后重试' });
+        const input = await body(req); const email = normalizedEmail(input.email); const attemptKey = `${req.socket.remoteAddress}:${email}`;
+        const throttle = loginThrottle.check(attemptKey); if (throttle.blocked) return json(res, 429, { error: '登录尝试过多，请稍后重试', retryAfterSeconds: throttle.retryAfterSeconds }, { 'retry-after': String(throttle.retryAfterSeconds) });
         const data = await store.read();
         const user = data.users.find(item => item.email === email);
-        if (!user || !await verifyPassword(input.password, user.passwordHash)) { loginAttempts.set(attemptKey, { count: (attempt?.count || 0) + 1, startedAt: attempt?.startedAt || nowMs }); return json(res, 401, { error: '邮箱或密码错误' }); }
-        loginAttempts.delete(attemptKey);
+        if (!user || !await verifyPassword(input.password, user.passwordHash)) { loginThrottle.recordFailure(attemptKey); return json(res, 401, { error: '邮箱或密码错误' }); }
+        loginThrottle.clear(attemptKey);
         const membership = data.memberships.find(item => item.userId === user.id && !item.disabledAt);
         if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
         if (user.mfaSecretEncrypted) {
