@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.21
+
+- Added explicit GitHub branch synchronization for the current commit, verification metadata, commit statuses, and check runs.
+- Bound every new, retry, and focused-retest run to an immutable repository snapshot and blocked the release gate when a bound commit's CI is not successful.
+- Added role-gated sync, cached member-readable status, audit events, strict repository validation, a project-connection UI, and a no-project startup regression fix.
+
 ## 0.4.0-dev.20
 
 - Added an owner-only deployment-readiness center with local-only, controlled-pilot, and production-candidate verdicts.

@@ -35,6 +35,7 @@ memberList.insertAdjacentHTML('afterend', '<div id="invitationList" class="invit
 memberForm.insertAdjacentHTML('afterend', '<div class="one-time-secret" id="invitationSecret" hidden></div>');
 automationSection.insertAdjacentHTML('beforeend', '<div class="email-settings"><div class="section-title"><div><b>邮件通知</b><small>邀请、验收失败和待审批主动触达</small></div><em id="emailState">检查中…</em></div><p id="emailHint">SMTP 由部署环境安全配置。</p><button id="sendTestEmail" type="button">发送测试邮件</button><div id="emailDeliveryList" class="automation-list email-delivery-list"></div></div>');
 operationsSection.insertAdjacentHTML('beforebegin', '<section id="readinessSection" class="readiness-section"><div class="section-title"><div><b>上线就绪中心</b><small>区分本地可用、受控试点和公网候选</small></div><button id="exportReadiness" type="button">导出报告</button></div><div id="readinessVerdict" class="readiness-verdict"><span>检查中…</span></div><div id="readinessChecks" class="readiness-checks"></div></section>');
+document.querySelector('.connect-form').insertAdjacentHTML('afterend', '<section class="repository-sync"><header><div><span>代码证据</span><b>GitHub 提交与 CI</b></div><button id="syncRepository" type="button">同步仓库</button></header><div id="repositoryStatus" class="repository-status"><p>保存 owner/repository 后，可以把验收任务固定到具体提交。</p></div></section>');
 document.body.insertAdjacentHTML('beforeend', `<dialog id="starterDialog" class="starter-dialog"><form id="starterForm"><header><div><span>首次使用向导</span><h2>创建第一个真实验收</h2><p>选择场景并填写目标，系统会一次创建项目、可执行标准和首个验收任务。</p></div><button type="button" id="closeStarter" aria-label="关闭">×</button></header><section><div class="starter-step"><b>1</b><span>选择验收启动包</span></div><div id="starterKitList" class="starter-kit-list"></div></section><section><div class="starter-step"><b>2</b><span>连接你的测试项目</span></div><div class="starter-grid"><label><span>项目名称</span><input id="starterName" required placeholder="例如 客户管理后台"></label><label><span>代码分支</span><input id="starterBranch" value="main" required></label><label class="wide"><span>本机项目目录</span><input id="starterRepo" required placeholder="/Users/you/Projects/my-app"></label><label class="wide"><span>测试网址</span><input id="starterUrl" type="url" required placeholder="http://127.0.0.1:3000"></label><label><span>起始页面</span><input id="starterPath" value="/" required></label><label><span>页面必须出现的文字</span><input id="starterExpectedText" required placeholder="例如 登录 或产品名称"></label><label class="wide"><span>这次发布要证明什么</span><textarea id="starterRequirement" rows="2" required placeholder="用业务语言描述本次开发目标"></textarea></label></div></section><footer><label class="starter-execute"><input id="starterExecute" type="checkbox" checked><span>环境就绪后立即执行并保存截图证据</span></label><button type="submit" id="applyStarter">创建并开始验收</button></footer><p id="starterError" class="auth-error" hidden></p></form></dialog>`);
 document.body.insertAdjacentHTML('beforeend', `<aside id="inboxPanel" class="inbox-panel" aria-hidden="true"><header><div><span>我的工作</span><h2>团队待办</h2><p>只展示当前工作区仍需要处理的事项。</p></div><button id="closeInbox" aria-label="关闭">×</button></header><div class="inbox-toolbar"><b id="inboxSummary">正在读取…</b><button id="readAllInbox">全部已读</button></div><section id="inboxList" class="inbox-list"><p>正在读取待办…</p></section></aside><div id="inboxMask" class="inbox-mask" hidden></div>`);
 document.body.insertAdjacentHTML('beforeend', `<aside id="portfolioPanel" class="portfolio-panel" aria-hidden="true"><header><div><span>发布管理</span><h2>项目总览</h2><p>按真实验收证据汇总当前工作区，不使用 AI 猜测状态。</p></div><button id="closePortfolio" aria-label="关闭">×</button></header><section id="portfolioSummary" class="portfolio-summary"></section><div class="portfolio-toolbar"><div><b>使用中的项目</b><small id="portfolioUpdated">正在读取…</small></div><button id="portfolioAdd" type="button">＋ 接入项目</button></div><section id="portfolioList" class="portfolio-list"><p>正在汇总项目状态…</p></section><section id="portfolioArchiveSection" class="portfolio-archive-section" hidden><header><div><b>已归档项目</b><small>历史验收和证据仍然保留</small></div><span id="portfolioArchiveCount">0</span></header><div id="portfolioArchived" class="portfolio-archived"></div></section></aside><div id="portfolioMask" class="portfolio-mask" hidden></div><dialog id="archiveProjectDialog" class="archive-project-dialog"><form id="archiveProjectForm"><header><div><span>项目生命周期</span><h3>归档项目</h3></div><button type="button" id="closeArchiveProject">×</button></header><p>归档后项目会离开日常工作区，但历史验收、证据和审计记录都会保留，也可以随时恢复。</p><input type="hidden" id="archiveProjectId"><label><span>归档原因</span><textarea id="archiveProjectReason" rows="3" maxlength="1000" required placeholder="例如：项目已交付，暂不再维护"></textarea></label><div id="archiveProjectError" class="archive-project-error" hidden></div><footer><button type="button" id="cancelArchiveProject">取消</button><button type="submit">确认归档</button></footer></form></dialog>`);
@@ -269,7 +270,7 @@ function renderLiveDashboard(project, run) {
   }
   heading.innerHTML = `${escapeHtml(project.name)} <em>发布验收</em>`;
   overline.textContent = `项目 / ${project.name}${run ? ` / ${run.id.toUpperCase()}` : ''}`;
-  scope.innerHTML = `<span>当前分支</span><strong><code>${escapeHtml(project.branch)}</code></strong><small>${run ? new Date(run.createdAt).toLocaleString('zh-CN') : '尚未创建验收任务'}</small>`;
+  scope.innerHTML = `<span>当前分支</span><strong><code>${escapeHtml(project.branch)}</code></strong><small>${run ? `${new Date(run.createdAt).toLocaleString('zh-CN')}${run.repositorySnapshot ? ` · 提交 ${escapeHtml(run.repositorySnapshot.commit.shortSha)}` : ' · 未绑定远端提交'}` : '尚未创建验收任务'}</small>`;
   document.querySelector('.case-id b').textContent = run ? run.id.toUpperCase() : '—';
 
   const criteria = run?.criteria || [];
@@ -377,7 +378,7 @@ async function bootstrapBackend() {
     historyList.innerHTML = projectRuns.map((run, index) => { const meta = verdictMeta(run.execution?.verdict || (run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : 'evidence_insufficient')); return `<article class="${index === 0 ? 'current' : ''}" data-run-id="${run.id}"><i></i><div><header><b>${run.id.toUpperCase()}</b><time>${new Date(run.createdAt).toLocaleString('zh-CN')}</time></header><h3>${escapeHtml(run.requirement)}</h3><p>${run.criteria.length} 条标准 · 第 ${run.attemptNumber || 1} 次 · ${meta.label}</p><span class="history-status ${run.execution?.verdict === 'passed' ? 'pass-status' : run.execution?.verdict === 'failed' || run.status === 'failed' ? 'fail-status' : 'hold-status'}">${meta.label}</span><button class="open-run-detail" data-run-id="${run.id}">查看真实任务</button></div></article>`; }).join('') || '<div class="contract-empty">还没有验收记录</div>';
     const summary = document.querySelectorAll('.history-summary b'); if (summary.length === 3) { summary[0].textContent = projectRuns.length; summary[1].textContent = projectRuns.filter(item => item.status !== 'completed').length; summary[2].textContent = projectRuns.filter(item => item.execution?.verdict === 'passed').length; }
     historyBtn.querySelector('span').textContent = String(projectRuns.length);
-    backendRunId = requestedRun?.projectId === saved?.id ? requestedRun.id : projectRuns[0]?.id || null;
+    backendRunId = requestedRun && requestedRun.projectId === saved?.id ? requestedRun.id : projectRuns[0]?.id || null;
     renderLiveDashboard(saved, projectRuns[0]);
     renderProjectMenu();
     await loadInbox();
@@ -395,6 +396,7 @@ saveConnection.onclick = async () => {
     const project = await api('/api/projects', { method: 'POST', body: JSON.stringify({ id: backendProjectId, name: document.querySelector('.project-head h1').childNodes[0].textContent.trim(), repo: connectRepo.value, url: connectUrl.value, branch: connectBranch.value, handoffMode: handoffMode.value, githubRepo: connectGithubRepo.value }) });
     backendProjectId = project.id;
     backendProject = project;
+    renderRepositoryStatus(project.repositoryStatus || null, project.githubRepo);
     await loadContracts({ seed: true });
     connectText.textContent = '后端已保存';
     connectBtn.classList.add('partial');
@@ -402,6 +404,28 @@ saveConnection.onclick = async () => {
     toast('项目配置已保存到后端');
   } catch (error) { toast(error.message); }
 };
+
+const repositoryStateLabel = value => ({ success: 'CI 通过', failure: 'CI 失败', pending: 'CI 运行中', none: '暂无 CI 结果' }[value] || '状态未知');
+function renderRepositoryStatus(status, repository = backendProject?.githubRepo) {
+  syncRepository.disabled = !backendProjectId || !repository || !['owner', 'approver'].includes(currentSession?.role);
+  syncRepository.hidden = currentSession?.role === 'member';
+  if (!repository) { repositoryStatus.innerHTML = '<p>尚未配置 GitHub 仓库。令牌只从服务端环境读取，不会保存到项目或浏览器。</p>'; return; }
+  if (!status) { repositoryStatus.innerHTML = `<p><b>${escapeHtml(repository)}</b> 尚未同步；管理员或审批人同步后，新任务会绑定当前提交。</p>`; return; }
+  const tone = status.checks.state === 'success' ? 'success' : status.checks.state === 'failure' ? 'failure' : 'pending';
+  repositoryStatus.innerHTML = `<article class="${tone}"><div><span>${escapeHtml(status.repository)} · ${escapeHtml(status.branch)}</span><b>${escapeHtml(status.commit.message || '无提交说明')}</b><p><a href="${escapeHtml(status.commit.url)}" target="_blank" rel="noopener">${escapeHtml(status.commit.shortSha)}</a> · ${escapeHtml(status.commit.author)}${status.commit.verified ? ' · 已验证签名' : ''}</p></div><em>${repositoryStateLabel(status.checks.state)}</em></article><small>${status.checks.passed}/${status.checks.total} 项通过 · ${status.checks.failed} 项失败 · ${status.checks.pending} 项进行中 · ${new Date(status.syncedAt).toLocaleString('zh-CN')} 同步</small>`;
+}
+async function loadRepositoryStatus() {
+  if (!backendProjectId) return renderRepositoryStatus(null, '');
+  try { const result = await api(`/api/projects/${backendProjectId}/repository`); renderRepositoryStatus(result.status, result.repository); }
+  catch (error) { repositoryStatus.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`; }
+}
+syncRepository.onclick = async () => {
+  syncRepository.disabled = true; syncRepository.textContent = '同步中…';
+  try { const status = await api(`/api/projects/${backendProjectId}/repository/sync`, { method: 'POST' }); backendProject.repositoryStatus = status; renderRepositoryStatus(status); toast(`已绑定提交 ${status.commit.shortSha}`); }
+  catch (error) { toast(error.message); }
+  finally { syncRepository.textContent = '同步仓库'; syncRepository.disabled = false; }
+};
+connectBtn.addEventListener('click', () => loadRepositoryStatus());
 
 runPreflight.onclick = async () => {
   if (!backendProjectId) {

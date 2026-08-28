@@ -29,6 +29,7 @@
 - [x] Reusable acceptance-contract packs with previewed conflicts, safe import/export, and bulk state changes
 - [x] Reversible project archival with owner authorization, active-work protection, and preserved evidence
 - [x] Owner-only deployment readiness center with conservative environment grading and exportable evidence
+- [x] Explicit GitHub commit and CI synchronization with immutable run binding and release-gate enforcement
 
 ## 1.0 — Self-hosted release gate
 

@@ -9,6 +9,7 @@ import { JsonStore, createId } from './lib/store.js';
 import { PostgresStore } from './lib/postgres-store.js';
 import { appendAudit, verifyAuditChain } from './lib/audit.js';
 import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
+import { normalizeGitHubRepository, readGitHubRepository } from './lib/github-repository.js';
 import { evaluateReleaseGate } from './lib/release-gate.js';
 import { createSigningKey, decryptSecret, encryptSecret, keyFromSecret, signPayload, verifySignedPayload } from './lib/signing.js';
 import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
@@ -22,7 +23,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.20';
+const serviceVersion = '0.4.0-dev.21';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -229,7 +230,7 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
@@ -841,13 +842,36 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const now = new Date().toISOString();
           const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
           if (existing?.archivedAt) throw Object.assign(new Error('已归档项目不能修改，请先恢复'), { status: 409 });
-          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
+          const branch = required(input.branch || 'main', '代码分支', 255); const githubRepo = normalizeGitHubRepository(input.githubRepo ?? existing?.githubRepo, { optional: true });
+          const repositoryStatus = existing?.repositoryStatus?.repository === githubRepo && existing.repositoryStatus.branch === branch ? existing.repositoryStatus : null;
+          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: repoPath, url: targetUrl, branch, handoffMode: input.handoffMode || 'file', githubRepo, repositoryStatus, updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
           let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); if (!preference) data.projectSelections.push({ id: createId('psl'), workspaceId, userId: currentUser.id, projectId: value.id, updatedAt: now }); else { preference.projectId = value.id; preference.updatedAt = now; }
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: existing ? 'project.updated' : 'project.created', entityType: 'project', entityId: value.id, details: { branch: value.branch, handoffMode: value.handoffMode }, at: now });
           return value;
         });
         return json(res, 201, project);
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'projects' && segments[2] && segments[3] === 'repository') {
+        const project = authData.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        if (!project) return json(res, 404, { error: '项目不存在' });
+        return json(res, 200, { configured: Boolean(project.githubRepo), repository: project.githubRepo || null, branch: project.branch, status: project.repositoryStatus || null });
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[2] && segments[3] === 'repository' && segments[4] === 'sync') {
+        requireRole(['owner', 'approver']);
+        const project = authData.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt);
+        if (!project) return json(res, 404, { error: '项目不存在或已归档' });
+        if (!project.githubRepo) return json(res, 409, { error: '请先配置 GitHub 仓库' });
+        const repositoryStatus = await githubRepositoryReader({ repository: project.githubRepo, branch: project.branch, token: process.env.GITHUB_TOKEN });
+        const saved = await store.update(data => {
+          const current = data.projects.find(item => item.id === project.id && item.workspaceId === workspaceId && !item.archivedAt);
+          if (!current) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
+          if (current.githubRepo !== project.githubRepo || current.branch !== project.branch) throw Object.assign(new Error('仓库配置已变化，请重新同步'), { status: 409 });
+          current.repositoryStatus = repositoryStatus; current.updatedAt = repositoryStatus.syncedAt;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'project.repository_synced', entityType: 'project', entityId: current.id, details: { provider: repositoryStatus.provider, repository: repositoryStatus.repository, branch: repositoryStatus.branch, commitSha: repositoryStatus.commit.sha, checksState: repositoryStatus.checks.state }, at: repositoryStatus.syncedAt });
+          return current.repositoryStatus;
+        });
+        return json(res, 200, saved);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[3] === 'preflight') {
         const data = await store.read();
@@ -952,11 +976,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'POST' && url.pathname === '/api/runs') {
         const input = await body(req);
         const run = await store.update(data => {
-          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt)) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
+          const project = data.projects.find(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt);
+          if (!project) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
-          const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
+          const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, repositorySnapshot: project.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
           data.runs.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.created', entityType: 'run', entityId: value.id, details: { criteriaCount: criteria.length }, at: value.createdAt }); return value;
         });
         return json(res, 201, run);
@@ -967,8 +992,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (!source) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
           if (data.projects.find(item => item.id === source.projectId)?.archivedAt) throw Object.assign(new Error('已归档项目不能创建复验，请先恢复'), { status: 409 });
           if (!['completed', 'failed'].includes(source.status)) throw Object.assign(new Error('只有已完成或执行失败的任务才能创建重试'), { status: 409 });
-          const now = new Date().toISOString(); const rootRunId = source.rootRunId || source.retryOfRunId || source.id;
-          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: source.requirement, criteria: structuredClone(source.criteria), status: 'queued', attemptNumber: Number(source.attemptNumber || 1) + 1, retryOfRunId: source.id, rootRunId, createdByUserId: currentUser.id, createdAt: now };
+          const now = new Date().toISOString(); const rootRunId = source.rootRunId || source.retryOfRunId || source.id; const project = data.projects.find(item => item.id === source.projectId);
+          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: source.requirement, criteria: structuredClone(source.criteria), repositorySnapshot: project?.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: Number(source.attemptNumber || 1) + 1, retryOfRunId: source.id, rootRunId, createdByUserId: currentUser.id, createdAt: now };
           data.runs.unshift(run); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.retry_created', entityType: 'run', entityId: run.id, details: { sourceRunId: source.id, rootRunId, attemptNumber: run.attemptNumber }, at: now }); return run;
         });
         return json(res, 201, retried);
@@ -1108,7 +1133,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const criteria = issue.criterionId ? source.criteria.filter(item => (item.contractId || item.code) === issue.criterionId) : source.criteria;
           if (!criteria.length) throw Object.assign(new Error('没有可复验的标准'), { status: 409 });
           const now = new Date().toISOString();
-          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', attemptNumber: 1, parentRunId: source.id, issueIds: [issue.id], createdAt: now };
+          const project = data.projects.find(item => item.id === source.projectId);
+          const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, repositorySnapshot: project?.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, parentRunId: source.id, issueIds: [issue.id], createdAt: now };
           data.runs.unshift(run);
           issue.status = 'retesting'; issue.retestRunId = run.id; issue.updatedAt = now;
           issue.timeline ||= []; issue.timeline.push({ status: 'retesting', at: now, note: `已创建复验任务 ${run.id}` });

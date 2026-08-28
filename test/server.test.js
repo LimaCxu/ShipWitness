@@ -201,6 +201,43 @@ test('project selection persists per user and workspace', async t => {
   assert.deepEqual((await ownerRequest(base, '/api/projects/overview')).body.summary, { projects: 0, actionable: 0, inProgress: 0, approved: 0, archived: 0 });
 });
 
+test('GitHub repository sync is role-gated and binds an immutable commit snapshot to each run', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-github-sync-')); let syncCalls = 0;
+  const repositoryReader = async input => {
+    syncCalls += 1; const sha = String(syncCalls).repeat(40);
+    assert.equal(input.repository, 'acme/product'); assert.equal(input.branch, 'main');
+    return { provider: 'github', repository: input.repository, branch: input.branch, commit: { sha, shortSha: sha.slice(0, 7), url: `https://github.com/acme/product/commit/${sha}`, message: `Commit ${syncCalls}`, author: 'Ada', committedAt: '2026-08-28T00:00:00Z', verified: true }, checks: { state: 'success', total: 1, passed: 1, failed: 0, pending: 0, detailsUrl: `https://github.com/acme/product/commit/${sha}/checks` }, syncedAt: new Date().toISOString() };
+  };
+  const server = createApp({ storeFile: join(folder, 'store.json'), githubRepositoryReader: repositoryReader });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  assert.equal((await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '错误仓库', repo: folder, url: base, branch: 'main', githubRepo: 'https://github.com/acme/product' }) })).status, 400);
+  const project = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '产品仓库', repo: folder, url: base, branch: 'main', githubRepo: 'acme/product' }) });
+  assert.equal(project.status, 201);
+
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'repo-member@example.com', password: 'member-password-123', role: 'member' }) });
+  assert.equal(member.status, 201);
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'repo-member@example.com', password: 'member-password-123' }) });
+  const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, `/api/projects/${project.body.id}/repository/sync`, { method: 'POST' })).status, 403);
+
+  const firstSync = await ownerRequest(base, `/api/projects/${project.body.id}/repository/sync`, { method: 'POST' });
+  assert.equal(firstSync.status, 200); assert.equal(firstSync.body.commit.sha, '1'.repeat(40));
+  const cached = await memberRequest(base, `/api/projects/${project.body.id}/repository`);
+  assert.equal(cached.status, 200); assert.equal(cached.body.status.commit.sha, '1'.repeat(40));
+  assert.equal(JSON.stringify(cached.body).includes('token'), false);
+
+  const run = await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '发布候选提交必须可追溯', criteria: [{ code: 'GIT-01', title: '提交绑定', description: '验收记录固定到同步提交' }] }) });
+  assert.equal(run.status, 201); assert.equal(run.body.repositorySnapshot.commit.sha, '1'.repeat(40));
+  const secondSync = await ownerRequest(base, `/api/projects/${project.body.id}/repository/sync`, { method: 'POST' });
+  assert.equal(secondSync.body.commit.sha, '2'.repeat(40));
+  const historicalRun = await ownerRequest(base, `/api/runs/${run.body.id}`);
+  assert.equal(historicalRun.body.repositorySnapshot.commit.sha, '1'.repeat(40));
+  const audit = await ownerRequest(base, '/api/audit');
+  assert.equal(audit.body.filter(item => item.action === 'project.repository_synced').length, 2);
+});
+
 test('project archive is reversible, preserves history and protects active work', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-project-archive-'));
   const server = createApp({ storeFile: join(folder, 'store.json') });

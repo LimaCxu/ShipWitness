@@ -1,6 +1,6 @@
 {
   "name": "shipwitness",
-  "version": "0.4.0-dev.20",
+  "version": "0.4.0-dev.21",
   "description": "Evidence-first release acceptance for AI-built software.",
   "license": "MIT",
   "private": false,
@@ -12,7 +12,7 @@
     "dev": "node --watch server.js",
     "start": "node server.js",
     "test": "node --test",
-    "check": "node --check server.js && node --check lib/store.js && node --check lib/postgres-store.js && node --check lib/auth.js && node --check lib/audit.js && node --check lib/handoff.js && node --check lib/browser-executor.js && node --check lib/email.js && node --check lib/release-gate.js && node --check lib/release.js && node --check lib/signing.js && node --check lib/webhook.js && node --check lib/operations.js && node --check lib/target-policy.js && node --check scripts/migrate-json-to-postgres.js && node --check scripts/backup.js && node --check scripts/verify-backup.js && node --check scripts/restore.js && node --check scripts/release-gate.js && node --check scripts/verify-dossier.js && node --check scripts/build-release.js && node --check scripts/verify-release.js && node --check scripts/preflight-upgrade.js && node --check scripts/rotate-master-key.js && node --check scripts/rollback-compose.js && node --check outputs/shipwitness-prototype/app.js && node --check outputs/shipwitness-prototype/api.js && node --test",
+    "check": "node --check server.js && node --check lib/store.js && node --check lib/postgres-store.js && node --check lib/auth.js && node --check lib/audit.js && node --check lib/handoff.js && node --check lib/github-repository.js && node --check lib/browser-executor.js && node --check lib/email.js && node --check lib/release-gate.js && node --check lib/release.js && node --check lib/signing.js && node --check lib/webhook.js && node --check lib/operations.js && node --check lib/target-policy.js && node --check scripts/migrate-json-to-postgres.js && node --check scripts/backup.js && node --check scripts/verify-backup.js && node --check scripts/restore.js && node --check scripts/release-gate.js && node --check scripts/verify-dossier.js && node --check scripts/build-release.js && node --check scripts/verify-release.js && node --check scripts/preflight-upgrade.js && node --check scripts/rotate-master-key.js && node --check scripts/rollback-compose.js && node --check outputs/shipwitness-prototype/app.js && node --check outputs/shipwitness-prototype/api.js && node --test",
     "db:migrate-json": "node scripts/migrate-json-to-postgres.js",
     "backup": "node scripts/backup.js",
     "backup:verify": "node scripts/verify-backup.js",

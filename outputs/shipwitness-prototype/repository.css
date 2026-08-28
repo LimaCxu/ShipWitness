@@ -1,0 +1,23 @@
+.repository-sync { margin: 0 22px 18px; padding: 14px; border: 1px solid #dfe4ee; border-radius: 8px; background: #f8f9fc; }
+.repository-sync > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.repository-sync > header div { display: grid; gap: 3px; }
+.repository-sync > header span { color: #7b8498; font-size: 8px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.repository-sync > header b { color: #27344f; font-size: 11px; }
+.repository-sync > header button { padding: 7px 10px; border: 0; border-radius: 6px; color: #fff; background: #3157d5; font-size: 9px; font-weight: 700; cursor: pointer; }
+.repository-sync > header button:disabled { color: #929aad; background: #e4e7ed; cursor: default; }
+.repository-status { margin-top: 11px; }
+.repository-status > p { margin: 0; color: #778197; font-size: 9px; line-height: 1.55; }
+.repository-status > p b { color: #344054; }
+.repository-status > p.error { color: #b42318; }
+.repository-status article { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px; border: 1px solid #dfe4eb; border-left: 3px solid #d09a31; border-radius: 7px; background: #fff; }
+.repository-status article.success { border-left-color: #2f9b75; }
+.repository-status article.failure { border-left-color: #d2554b; }
+.repository-status article div { display: grid; min-width: 0; gap: 4px; }
+.repository-status article span { color: #7d879a; font-size: 8px; }
+.repository-status article b { overflow: hidden; color: #344054; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.repository-status article p { margin: 0; color: #778197; font-size: 8px; }
+.repository-status article a { color: #3157d5; font-family: var(--mono); font-weight: 700; text-decoration: none; }
+.repository-status article em { flex: 0 0 auto; padding: 4px 6px; border-radius: 4px; color: #8b6113; background: #fff7e8; font-size: 8px; font-style: normal; font-weight: 700; }
+.repository-status article.success em { color: #027a48; background: #ecfdf3; }
+.repository-status article.failure em { color: #b42318; background: #fff1f0; }
+.repository-status > small { display: block; margin-top: 7px; color: #8b94a7; font-size: 8px; }
