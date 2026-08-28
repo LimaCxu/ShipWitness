@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.18
+
+- Added cross-project contract copying and portable `shipwitness.contract-pack.v1` JSON exports.
+- Added server-validated import previews with duplicate detection and explicit skip-or-version conflict handling.
+- Added bulk enable/disable controls, import audit events, workspace isolation tests, and a guided standard-reuse dialog.
+
 ## 0.4.0-dev.17
 
 - Added an evidence-derived project portfolio with approved, awaiting-approval, active, blocked, and not-started states.

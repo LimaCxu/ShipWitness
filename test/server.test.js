@@ -201,6 +201,40 @@ test('project selection persists per user and workspace', async t => {
   assert.deepEqual((await ownerRequest(base, '/api/projects/overview')).body.summary, { projects: 0, actionable: 0, inProgress: 0, approved: 0 });
 });
 
+test('contract packs preview conflicts, import safely, export and bulk update', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-contract-pack-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const source = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '来源项目', repo: folder, url: base, branch: 'main' }) });
+  const target = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '目标项目', repo: folder, url: base, branch: 'main' }) });
+  for (const contract of [{ code: 'AUTH-01', title: '来源权限标准', description: '普通成员不能访问管理页', category: '权限', severity: 'blocker' }, { code: 'DATA-01', title: '资料持久化', description: '刷新后资料仍然存在', category: '数据', severity: 'major' }]) await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: source.body.id, ...contract }) });
+  await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: target.body.id, code: 'AUTH-01', title: '目标原标准', description: '保留本项目内容', category: '权限', severity: 'major' }) });
+
+  const exported = await authRequest(base, `/api/contracts/export?projectId=${source.body.id}`);
+  assert.equal(exported.body.schema, 'shipwitness.contract-pack.v1');
+  assert.equal(exported.body.contracts.length, 2);
+  assert.ok(exported.body.contracts.every(item => !('workspaceId' in item) && !('id' in item)));
+  const preview = await authRequest(base, '/api/contracts/import/preview', { method: 'POST', body: JSON.stringify({ projectId: target.body.id, sourceProjectId: source.body.id }) });
+  assert.deepEqual(preview.body, { total: 2, create: 1, conflicts: ['AUTH-01'] });
+  const skipped = await authRequest(base, '/api/contracts/import', { method: 'POST', body: JSON.stringify({ projectId: target.body.id, contracts: exported.body.contracts, conflictMode: 'skip' }) });
+  assert.equal(skipped.body.created, 1); assert.equal(skipped.body.skipped, 1);
+  let targetContracts = (await authRequest(base, `/api/contracts?projectId=${target.body.id}`)).body;
+  assert.equal(targetContracts.find(item => item.code === 'AUTH-01').title, '目标原标准');
+  const replaced = await authRequest(base, '/api/contracts/import', { method: 'POST', body: JSON.stringify({ projectId: target.body.id, contracts: exported.body.contracts, conflictMode: 'replace' }) });
+  assert.equal(replaced.body.replaced, 2);
+  targetContracts = (await authRequest(base, `/api/contracts?projectId=${target.body.id}`)).body;
+  assert.equal(targetContracts.find(item => item.code === 'AUTH-01').title, '来源权限标准');
+  const bulk = await authRequest(base, '/api/contracts/bulk', { method: 'PATCH', body: JSON.stringify({ projectId: target.body.id, enabled: false }) });
+  assert.equal(bulk.body.count, 2);
+  assert.ok((await authRequest(base, `/api/contracts?projectId=${target.body.id}`)).body.every(item => item.enabled === false));
+
+  await authRequest(base, '/api/workspaces', { method: 'POST', body: JSON.stringify({ name: '隔离标准空间' }) });
+  assert.equal((await authRequest(base, `/api/contracts/export?projectId=${source.body.id}`)).status, 404);
+  assert.equal((await authRequest(base, '/api/contracts/import/preview', { method: 'POST', body: JSON.stringify({ projectId: target.body.id, sourceProjectId: source.body.id }) })).status, 404);
+});
+
 test('starter kit creates a project, executable contracts and first run atomically', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-starter-'));
   const server = createApp({ storeFile: join(folder, 'store.json'), artifactsDir: join(folder, 'evidence') });

@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.17';
+const serviceVersion = '0.4.0-dev.18';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -84,6 +84,20 @@ const starterContracts = ({ kitId, startPath, expectedText }) => {
   if (kitId === 'login') return [identity, { code: 'AUTH-01', title: '密码入口可用', description: '登录页必须显示可操作的密码输入框。', category: '安全', severity: 'blocker', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector: 'input[type="password"]' }] }];
   const selector = kitId === 'dashboard' ? 'main' : 'body';
   return [identity, { code: kitId === 'dashboard' ? 'DASH-01' : 'VIEW-01', title: kitId === 'dashboard' ? '工作台主体可见' : '页面主体可见', description: kitId === 'dashboard' ? '页面必须渲染可见的主工作区。' : '页面主体必须完成渲染并可见。', category: '可用性', severity: 'major', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector }] }];
+};
+
+const normalizeContractPack = contracts => {
+  if (!Array.isArray(contracts) || !contracts.length) throw Object.assign(new Error('标准包不能为空'), { status: 400 });
+  if (contracts.length > 100) throw Object.assign(new Error('单次最多导入 100 条标准'), { status: 400 });
+  const codes = new Set();
+  return contracts.map((item, index) => {
+    const code = required(item?.code, `第 ${index + 1} 条标准编号`, 100).toUpperCase();
+    if (codes.has(code)) throw Object.assign(new Error(`标准包内编号重复：${code}`), { status: 400 });
+    codes.add(code);
+    const severity = item.severity || 'blocker';
+    if (!['blocker', 'major', 'minor'].includes(severity)) throw Object.assign(new Error(`标准 ${code} 的级别无效`), { status: 400 });
+    return { code, title: required(item.title, `标准 ${code} 名称`, 500), description: required(item.description, `标准 ${code} 描述`), category: required(item.category || '业务流程', `标准 ${code} 分类`, 100), severity, steps: normalizeSteps(item.steps), enabled: item.enabled !== false };
+  });
 };
 
 const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
@@ -791,6 +805,52 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url, allowedTargetOrigins), checkBrowserAvailability()]);
         const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
         return json(res, 200, { projectId: project.id, checkedAt: new Date().toISOString(), checks });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/contracts/export') {
+        const data = await store.read(); const projectId = url.searchParams.get('projectId');
+        const project = data.projects.find(item => item.id === projectId && item.workspaceId === workspaceId);
+        if (!project) return json(res, 404, { error: '项目不存在' });
+        const contracts = data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id).map(({ code, title, description, category, severity, steps, enabled }) => ({ code, title, description, category, severity, steps, enabled }));
+        return json(res, 200, { schema: 'shipwitness.contract-pack.v1', name: `${project.name} 验收标准`, sourceProject: { id: project.id, name: project.name }, exportedAt: new Date().toISOString(), contracts });
+      }
+      if (req.method === 'POST' && (url.pathname === '/api/contracts/import/preview' || url.pathname === '/api/contracts/import')) {
+        const input = await body(req); const data = await store.read();
+        const target = data.projects.find(item => item.id === input.projectId && item.workspaceId === workspaceId);
+        if (!target) return json(res, 404, { error: '目标项目不存在' });
+        let rawContracts = input.contracts;
+        if (input.sourceProjectId) {
+          const source = data.projects.find(item => item.id === input.sourceProjectId && item.workspaceId === workspaceId);
+          if (!source) return json(res, 404, { error: '来源项目不存在' });
+          rawContracts = data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === source.id);
+        }
+        const definitions = normalizeContractPack(rawContracts);
+        const existingCodes = new Set(data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === target.id).map(item => item.code));
+        const preview = { total: definitions.length, create: definitions.filter(item => !existingCodes.has(item.code)).length, conflicts: definitions.filter(item => existingCodes.has(item.code)).map(item => item.code) };
+        if (url.pathname.endsWith('/preview')) return json(res, 200, preview);
+        const conflictMode = input.conflictMode || 'skip';
+        if (!['skip', 'replace'].includes(conflictMode)) return json(res, 400, { error: '冲突处理方式无效' });
+        const result = await store.update(current => {
+          const now = new Date().toISOString(); let created = 0; let replaced = 0; let skipped = 0;
+          for (const definition of definitions) {
+            const existing = current.contracts.find(item => item.workspaceId === workspaceId && item.projectId === target.id && item.code === definition.code);
+            if (existing && conflictMode === 'skip') { skipped += 1; continue; }
+            if (existing) { Object.assign(existing, definition, { version: existing.version + 1, updatedAt: now }); replaced += 1; }
+            else { current.contracts.unshift({ ...definition, id: createId('ctr'), workspaceId, projectId: target.id, version: 1, createdAt: now, updatedAt: now }); created += 1; }
+          }
+          appendAudit(current, { workspaceId, actorUserId: currentUser.id, action: 'contract_pack.imported', entityType: 'project', entityId: target.id, details: { total: definitions.length, created, replaced, skipped, conflictMode }, at: now });
+          return { ...preview, created, replaced, skipped, conflictMode };
+        });
+        return json(res, 201, result);
+      }
+      if (req.method === 'PATCH' && url.pathname === '/api/contracts/bulk') {
+        const input = await body(req); if (typeof input.enabled !== 'boolean') return json(res, 400, { error: 'enabled 必须是布尔值' });
+        const changed = await store.update(data => {
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          const ids = Array.isArray(input.ids) ? new Set(input.ids.map(String)) : null; const now = new Date().toISOString(); let count = 0;
+          for (const contract of data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && (!ids || ids.has(item.id)))) { if (contract.enabled === input.enabled) continue; contract.enabled = input.enabled; contract.version += 1; contract.updatedAt = now; count += 1; }
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'contract.bulk_updated', entityType: 'project', entityId: input.projectId, details: { enabled: input.enabled, count }, at: now }); return { count, enabled: input.enabled };
+        });
+        return json(res, 200, changed);
       }
       if (req.method === 'GET' && url.pathname === '/api/contracts') {
         const data = await store.read();

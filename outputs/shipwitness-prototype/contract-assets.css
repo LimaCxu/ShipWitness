@@ -1,0 +1,63 @@
+.contracts-toolbar .contract-toolbar-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 7px;
+}
+
+.contracts-toolbar .contract-toolbar-actions .secondary {
+  border: 1px solid #cfd6e6;
+  color: #536078;
+  background: #fff;
+}
+
+.contract-assets-dialog {
+  width: min(540px, calc(100% - 28px));
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(20, 32, 64, .25);
+}
+
+.contract-assets-dialog::backdrop {
+  background: rgba(22, 31, 51, .56);
+}
+
+.contract-assets-dialog form > header {
+  display: flex;
+  justify-content: space-between;
+  padding: 24px 26px 19px;
+  border-bottom: 1px solid #e6e9f0;
+}
+
+.contract-assets-dialog header span { color: #5b56c8; font-size: 9px; font-weight: 700; }
+.contract-assets-dialog header h3 { margin: 6px 0; font-size: 20px; }
+.contract-assets-dialog header p { margin: 0; color: #778197; font-size: 9px; }
+.contract-assets-dialog header button { width: 32px; height: 32px; border: 0; border-radius: 6px; color: #667085; background: #f2f4f7; font-size: 19px; cursor: pointer; }
+.contract-assets-dialog form > section { display: grid; gap: 13px; padding: 20px 26px; }
+.contract-assets-dialog label { display: grid; gap: 6px; }
+.contract-assets-dialog label > span { color: #475467; font-size: 9px; font-weight: 700; }
+.contract-assets-dialog select,
+.contract-assets-dialog input[type="file"] { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; color: #344054; background: #fff; font: 10px var(--sans); }
+.asset-divider { position: relative; height: 1px; background: #eceff4; text-align: center; }
+.asset-divider span { position: relative; top: -7px; padding: 0 8px; color: #98a2b3; background: #fff; font-size: 8px; }
+.asset-preview { height: 36px; border: 1px solid #aeb9ed; border-radius: 6px; color: #4058bf; background: #f9faff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.asset-preview-result { display: grid; gap: 4px; padding: 11px; border: 1px solid #e1e5ed; border-radius: 6px; color: #758096; background: #f8f9fb; font-size: 9px; line-height: 1.5; }
+.asset-preview-result b { color: #344054; font-size: 11px; }
+.asset-preview-result.ready { border-color: #a9dfcb; color: #176b50; background: #f1fbf7; }
+.asset-preview-result.warning { border-color: #ead49e; color: #7a5713; background: #fffaf0; }
+.asset-preview-result.error { border-color: #efb5b0; color: #b42318; background: #fff5f4; }
+.contract-assets-dialog .asset-bulk { border-top: 1px solid #e6e9f0; border-bottom: 1px solid #e6e9f0; background: #f8f9fc; }
+.asset-bulk b { color: #344054; font-size: 10px; }
+.asset-bulk > div { display: flex; gap: 7px; }
+.asset-bulk button { height: 31px; padding: 0 9px; border: 1px solid #d5dae5; border-radius: 5px; color: #59647a; background: #fff; font-size: 8px; cursor: pointer; }
+.contract-assets-dialog form > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 17px 26px 22px; }
+.contract-assets-dialog footer button { height: 36px; padding: 0 14px; border: 1px solid #d0d5dd; border-radius: 6px; color: #59647a; background: #fff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.contract-assets-dialog footer button:last-child { border-color: #3157d5; color: #fff; background: #3157d5; }
+.contract-assets-dialog footer button:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (max-width: 620px) {
+  .contracts-toolbar { align-items: flex-start; gap: 12px; flex-direction: column; }
+  .contracts-toolbar .contract-toolbar-actions { width: 100%; }
+  .contracts-toolbar .contract-toolbar-actions button { flex: 1; }
+}
