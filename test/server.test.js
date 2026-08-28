@@ -167,6 +167,33 @@ test('invalid payloads return a useful 400 response', async t => {
   assert.match(longPassword.body.error, /128/);
 });
 
+test('project selection persists per user and workspace', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-project-selection-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  const first = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '项目甲', repo: folder, url: base, branch: 'main' }) });
+  const second = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '项目乙', repo: folder, url: base, branch: 'develop' }) });
+  assert.equal((await ownerRequest(base, '/api/projects')).body.find(item => item.selected).id, second.body.id);
+  assert.equal((await ownerRequest(base, `/api/projects/${first.body.id}/select`, { method: 'POST' })).status, 200);
+  assert.equal((await ownerRequest(base, '/api/projects')).body.find(item => item.selected).id, first.body.id);
+
+  await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '项目成员', email: 'project-member@example.com', password: 'member-project-password', role: 'member' }) });
+  const memberLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'project-member@example.com', password: 'member-project-password' }) });
+  const memberRequest = authenticatedRequest(memberLogin.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, '/api/projects')).body.find(item => item.selected).id, second.body.id);
+  await memberRequest(base, `/api/projects/${second.body.id}/select`, { method: 'POST' });
+  assert.equal((await memberRequest(base, '/api/projects')).body.find(item => item.selected).id, second.body.id);
+  assert.equal((await ownerRequest(base, '/api/projects')).body.find(item => item.selected).id, first.body.id);
+
+  const workspace = await ownerRequest(base, '/api/workspaces', { method: 'POST', body: JSON.stringify({ name: '另一个工作区' }) });
+  assert.equal(workspace.status, 201);
+  assert.equal((await ownerRequest(base, `/api/projects/${first.body.id}/select`, { method: 'POST' })).status, 404);
+  assert.equal((await ownerRequest(base, '/api/projects')).body.length, 0);
+});
+
 test('starter kit creates a project, executable contracts and first run atomically', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-starter-'));
   const server = createApp({ storeFile: join(folder, 'store.json'), artifactsDir: join(folder, 'evidence') });
@@ -185,7 +212,9 @@ test('starter kit creates a project, executable contracts and first run atomical
   assert.equal(applied.body.contracts.length, 2);
   assert.equal(applied.body.run.criteria.length, 2);
   assert.equal(applied.body.run.status, 'queued');
-  assert.equal((await authRequest(base, '/api/projects')).body.length, 1);
+  const projects = (await authRequest(base, '/api/projects')).body;
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].selected, true);
   assert.equal((await authRequest(base, `/api/contracts?projectId=${applied.body.project.id}`)).body.length, 2);
   const executed = await authRequest(base, `/api/runs/${applied.body.run.id}/execute`, { method: 'POST' });
   assert.equal(executed.status, 200);

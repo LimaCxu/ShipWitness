@@ -9,6 +9,7 @@ let backendProjectId = null;
 let backendRunId = null;
 let backendContracts = [];
 let backendProject = null;
+let backendProjects = [];
 let dashboardRun = null;
 let dashboardCriterionIndex = 0;
 let dashboardStage = 'claim';
@@ -25,6 +26,7 @@ const defaultContracts = [
 
 document.body.insertAdjacentHTML('beforeend', `<div class="auth-gate" id="authGate" hidden><section class="auth-card"><div class="auth-brand"><span>S</span><div><b>ShipWitness</b><small>发布验收台</small></div></div><div class="auth-copy"><span id="authEyebrow">安全工作区</span><h1 id="authTitle">登录 ShipWitness</h1><p id="authDescription">验收证据、返工单和发布决定只对工作区成员可见。</p></div><form id="authForm"><label id="workspaceField" hidden><span>工作区名称</span><input id="authWorkspace" autocomplete="organization" value="我的工作区"></label><label id="nameField" hidden><span>你的姓名</span><input id="authName" autocomplete="name" value="管理员"></label><label id="emailField"><span>邮箱</span><input id="authEmail" type="email" autocomplete="username" required placeholder="owner@example.com"></label><label><span>密码</span><input id="authPassword" type="password" autocomplete="current-password" minlength="10" required placeholder="至少 10 个字符"></label><p class="auth-error" id="authError" hidden></p><button type="submit" id="authSubmit">登录</button></form><footer>本地私有部署 · 会话使用 HttpOnly 安全 Cookie</footer></section></div>`);
 const accountSlot = document.createElement('div'); accountSlot.className = 'account-slot'; accountSlot.innerHTML = '<button id="inboxBtn" class="inbox-button">待办<span id="inboxBadge" hidden>0</span></button><button id="accountBtn">—</button><button id="logoutBtn">退出</button>'; document.querySelector('.bar-actions').prepend(accountSlot);
+const projectSlot = document.createElement('div'); projectSlot.className = 'project-slot'; projectSlot.innerHTML = '<button id="projectSwitchBtn" class="project-switch" type="button" aria-expanded="false"><span>当前项目</span><b>尚未接入</b><i>⌄</i></button><div id="projectMenu" class="project-menu" hidden></div>'; accountSlot.before(projectSlot);
 document.body.insertAdjacentHTML('beforeend', `<aside class="account-panel" id="accountPanel" aria-hidden="true"><header><div><span>组织、权限与自动化</span><h2>工作区管理</h2></div><button id="closeAccount" aria-label="关闭">×</button></header><section class="workspace-section"><div class="section-title"><div><b>我的工作区</b><small>切换后只显示该工作区的数据</small></div></div><div id="workspaceList" class="workspace-list"></div><form id="workspaceForm" class="inline-create"><input id="newWorkspaceName" placeholder="新工作区名称" required><button>创建</button></form></section><section class="member-section"><div class="section-title"><div><b>成员与角色</b><small>管理员可调整角色、重置密码并移除成员</small></div></div><div id="memberList" class="member-list"></div><form id="memberForm" class="member-form"><div><input id="memberName" placeholder="成员姓名" required><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><input id="memberPassword" type="password" minlength="10" maxlength="128" placeholder="初始密码（至少 10 位）" required><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select></div><button>添加成员</button><small>请通过安全方式把初始密码交给成员。</small></form></section><section class="operations-section" id="operationsSection"><div class="section-title"><div><b>运行状态</b><small>队列、失败投递与审计完整性</small></div><em id="operationsState">检查中…</em></div><div id="operationsGrid" class="operations-grid"></div></section><section class="alerts-section" id="alertsSection"><div class="section-title"><div><b>告警中心</b><small>异常可确认，恢复后自动闭环</small></div><em id="alertsState">检查中…</em></div><div id="alertsList" class="alerts-list"></div></section><section class="password-section"><div class="section-title"><div><b>账户安全</b><small>改密后其他登录会话立即失效</small></div></div><p class="password-notice" id="passwordNotice" hidden>当前使用管理员发放的临时密码，完成改密前不能执行写操作。</p><form id="passwordForm" class="password-form"><input id="currentPassword" type="password" minlength="10" maxlength="128" autocomplete="current-password" placeholder="当前密码" required><input id="newPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" placeholder="新密码（至少 10 位）" required><button>更新密码</button></form></section><section class="automation-section" id="automationSection"><div class="section-title"><div><b>发布自动化</b><small>机器门禁 API Key 与签名 Webhook</small></div></div><div id="apiKeyList" class="automation-list"></div><form id="apiKeyForm" class="inline-create"><input id="apiKeyName" placeholder="API Key 名称" required><button>创建 Key</button></form><div class="one-time-secret" id="apiKeySecret" hidden></div><div id="webhookList" class="automation-list webhook-list"></div><form id="webhookForm" class="automation-form"><input id="webhookName" placeholder="Webhook 名称" required><input id="webhookUrl" type="url" placeholder="https://example.com/shipwitness" required><button>添加 Webhook</button></form><div class="one-time-secret" id="webhookSecret" hidden></div></section><section class="governance-section" id="governanceSection"><div class="section-title"><div><b>合规与数据治理</b><small>导出可验证审计，清理到期运营数据</small></div></div><div class="audit-export-row"><div><b id="auditExportSummary">尚未生成导出</b><small>导出包含完整性证明与操作者目录</small></div><button id="createAuditExport">生成审计导出</button></div><a id="downloadAuditExport" class="audit-download" hidden>下载最近导出</a><form id="retentionForm" class="retention-form"><label><span>运营数据保留</span><select id="operationalDays"><option value="30">30 天</option><option value="90">90 天</option><option value="180">180 天</option><option value="365">365 天</option><option value="730">730 天</option></select></label><button>保存策略</button></form><button id="previewRetention" class="retention-preview">预览到期数据</button><div id="retentionResult" class="retention-result" hidden></div></section><section class="audit-section" id="auditSection"><div class="section-title"><div><b>审计时间线</b><small>关键操作按哈希链顺序记录</small></div><em id="auditIntegrity">校验中…</em></div><div id="auditList" class="audit-list"></div></section></aside><div class="account-mask" id="accountMask" hidden></div><dialog id="memberPasswordDialog" class="member-password-dialog"><form id="memberPasswordResetForm"><header><div><span>账户恢复</span><h3>重置成员密码</h3></div><button type="button" id="cancelMemberPassword">×</button></header><p>保存后该成员所有会话立即退出，下次登录必须修改临时密码。</p><input type="hidden" id="resetMembershipId"><label><span>临时密码</span><input id="resetMemberPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required></label><footer><button type="button" id="cancelMemberPasswordFooter">取消</button><button type="submit">确认重置</button></footer></form></dialog>`);
 document.querySelector('.member-section .section-title small').textContent = '成员通过一次性链接自行设置密码';
 memberForm.innerHTML = '<div><input id="memberName" placeholder="成员姓名（可选）"><input id="memberEmail" type="email" placeholder="成员邮箱" required></div><div><select id="memberRole"><option value="member">成员</option><option value="approver">审批人</option><option value="owner">管理员</option></select><select id="invitationExpiry"><option value="24">24 小时有效</option><option value="72" selected>3 天有效</option><option value="168">7 天有效</option></select></div><button>生成邀请链接</button><small>链接只显示一次；成员接受后自行设置密码。</small>';
@@ -55,6 +57,22 @@ const showInvitation = (details, token) => {
   authSubmit.textContent = '接受邀请并进入'; authPassword.autocomplete = details.existingAccount ? 'current-password' : 'new-password'; authPassword.value = '';
 };
 const hideAuth = session => { currentSession = session; authGate.hidden = true; document.body.classList.remove('auth-locked'); accountBtn.textContent = `${session.workspace.name} · ${session.user.name}`; };
+
+const renderProjectMenu = () => {
+  projectSwitchBtn.querySelector('b').textContent = backendProject?.name || '尚未接入';
+  projectMenu.innerHTML = `<header><span>当前工作区项目</span><small>${backendProjects.length} 个</small></header><div>${backendProjects.map(item => `<button type="button" data-project-id="${item.id}" class="${item.id === backendProjectId ? 'selected' : ''}"><i>${item.id === backendProjectId ? '✓' : ''}</i><span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.branch)} · ${escapeHtml(new URL(item.url).host)}</small></span></button>`).join('') || '<p>还没有接入项目</p>'}</div><button type="button" class="project-add" id="projectAddBtn"><span>＋</span> 接入新项目</button>`;
+  projectMenu.querySelectorAll('[data-project-id]').forEach(button => { button.onclick = async () => {
+    if (button.dataset.projectId === backendProjectId) { projectMenu.hidden = true; projectSwitchBtn.setAttribute('aria-expanded', 'false'); return; }
+    button.disabled = true;
+    try { await api(`/api/projects/${button.dataset.projectId}/select`, { method: 'POST' }); projectMenu.hidden = true; projectSwitchBtn.setAttribute('aria-expanded', 'false'); dashboardCriterionIndex = 0; dashboardStage = 'claim'; await bootstrapBackend(); toast('已切换项目'); }
+    catch (error) { toast(error.message); button.disabled = false; }
+  }; });
+  projectMenu.querySelector('#projectAddBtn').onclick = () => { projectMenu.hidden = true; projectSwitchBtn.setAttribute('aria-expanded', 'false'); openStarter({ additional: true }).catch(error => toast(error.message)); };
+};
+
+projectSwitchBtn.onclick = event => { event.stopPropagation(); projectMenu.hidden = !projectMenu.hidden; projectSwitchBtn.setAttribute('aria-expanded', String(!projectMenu.hidden)); };
+projectMenu.onclick = event => event.stopPropagation();
+document.addEventListener('click', () => { projectMenu.hidden = true; projectSwitchBtn.setAttribute('aria-expanded', 'false'); });
 
 authForm.onsubmit = async event => {
   event.preventDefault(); authSubmit.disabled = true; authError.hidden = true;
@@ -270,8 +288,11 @@ function renderLiveDashboard(project, run) {
 }
 
 let starterKitsCache = [];
-async function openStarter() {
+async function openStarter({ additional = false } = {}) {
   starterError.hidden = true;
+  starterDialog.querySelector('header span').textContent = additional ? '项目接入向导' : '首次使用向导';
+  starterDialog.querySelector('header h2').textContent = additional ? '接入另一个验收项目' : '创建第一个真实验收';
+  starterDialog.querySelector('header p').textContent = additional ? '选择适合的启动包，一次创建项目、验收标准和首个任务。' : '选择场景并填写目标，系统会一次创建项目、可执行标准和首个验收任务。';
   starterKitsCache = starterKitsCache.length ? starterKitsCache : await api('/api/starter-kits');
   starterKitList.innerHTML = starterKitsCache.map((kit, index) => `<label><input type="radio" name="starterKit" value="${kit.id}" ${index === 0 ? 'checked' : ''}><span><b>${escapeHtml(kit.icon)}</b><strong>${escapeHtml(kit.name)}</strong><small>${escapeHtml(kit.description)}</small></span></label>`).join('');
   if (!starterDialog.open) starterDialog.showModal();
@@ -299,7 +320,14 @@ async function bootstrapBackend() {
     await api('/api/health');
     setServiceState(true, '服务已连接');
     const projects = await api('/api/projects');
-    const saved = projects[0];
+    const runs = await api('/api/runs');
+    const query = new URLSearchParams(location.search);
+    const requestedRun = runs.find(item => item.id === query.get('run'));
+    const requestedProjectId = requestedRun?.projectId || query.get('project');
+    const requestedProject = projects.find(item => item.id === requestedProjectId);
+    const saved = requestedProject || projects.find(item => item.selected) || projects[0];
+    backendProjects = projects;
+    if (saved && !saved.selected) await api(`/api/projects/${saved.id}/select`, { method: 'POST' });
     if (saved) {
       backendProjectId = saved.id;
       backendProject = saved;
@@ -310,20 +338,21 @@ async function bootstrapBackend() {
       connectGithubRepo.value = saved.githubRepo || '';
       connectText.textContent = '后端已保存';
       connectBtn.classList.add('partial');
-      await loadContracts({ seed: true });
+      await loadContracts();
+    } else {
+      backendProjectId = null; backendProject = null; backendRunId = null; backendContracts = []; renderContracts();
+      connectRepo.value = ''; connectUrl.value = ''; connectBranch.value = 'main'; connectGithubRepo.value = ''; connectText.textContent = '检查接入'; connectBtn.classList.remove('partial');
     }
-    const runs = await api('/api/runs');
     const projectRuns = saved ? runs.filter(item => item.projectId === saved.id) : [];
     historyList.innerHTML = projectRuns.map((run, index) => { const meta = verdictMeta(run.execution?.verdict || (run.status === 'queued' ? 'queued' : run.status === 'failed' ? 'failed' : 'evidence_insufficient')); return `<article class="${index === 0 ? 'current' : ''}" data-run-id="${run.id}"><i></i><div><header><b>${run.id.toUpperCase()}</b><time>${new Date(run.createdAt).toLocaleString('zh-CN')}</time></header><h3>${escapeHtml(run.requirement)}</h3><p>${run.criteria.length} 条标准 · 第 ${run.attemptNumber || 1} 次 · ${meta.label}</p><span class="history-status ${run.execution?.verdict === 'passed' ? 'pass-status' : run.execution?.verdict === 'failed' || run.status === 'failed' ? 'fail-status' : 'hold-status'}">${meta.label}</span><button class="open-run-detail" data-run-id="${run.id}">查看真实任务</button></div></article>`; }).join('') || '<div class="contract-empty">还没有验收记录</div>';
     const summary = document.querySelectorAll('.history-summary b'); if (summary.length === 3) { summary[0].textContent = projectRuns.length; summary[1].textContent = projectRuns.filter(item => item.status !== 'completed').length; summary[2].textContent = projectRuns.filter(item => item.execution?.verdict === 'passed').length; }
     historyBtn.querySelector('span').textContent = String(projectRuns.length);
-    if (runs[0]) {
-      backendRunId = projectRuns[0]?.id || runs[0].id;
-    }
+    backendRunId = requestedRun?.projectId === saved?.id ? requestedRun.id : projectRuns[0]?.id || null;
     renderLiveDashboard(saved, projectRuns[0]);
+    renderProjectMenu();
     await loadInbox();
-    const requestedRunId = new URLSearchParams(location.search).get('run'); const requestedRun = runs.find(item => item.id === requestedRunId);
-    if (requestedRun) { backendRunId = requestedRun.id; history.replaceState({}, '', location.pathname); await loadRunTask(); }
+    if (requestedRun && requestedRun.projectId === saved?.id) { backendRunId = requestedRun.id; history.replaceState({}, '', location.pathname); await loadRunTask(); }
+    else if (query.has('project')) history.replaceState({}, '', location.pathname);
     if (!saved && !sessionStorage.getItem('shipwitness.starter.dismissed')) openStarter().catch(error => toast(error.message));
   } catch {
     setServiceState(false, '后端未启动');

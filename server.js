@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.15';
+const serviceVersion = '0.4.0-dev.16';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -515,6 +515,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (target.role === 'owner' && data.memberships.filter(item => item.workspaceId === workspaceId && item.role === 'owner').length <= 1) throw Object.assign(new Error('工作区必须至少保留一名管理员'), { status: 409 });
           const at = new Date().toISOString(); data.memberships = data.memberships.filter(item => item.id !== target.id);
           data.sessions = data.sessions.filter(item => item.userId !== target.userId || item.workspaceId !== workspaceId);
+          data.projectSelections = data.projectSelections.filter(item => item.userId !== target.userId || item.workspaceId !== workspaceId);
           let revokedApiKeys = 0; for (const key of data.apiKeys.filter(item => item.workspaceId === workspaceId && item.createdByUserId === target.userId && !item.revokedAt)) { key.revokedAt = at; revokedApiKeys += 1; }
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.removed', entityType: 'membership', entityId: target.id, details: { userId: target.userId, role: target.role, revokedApiKeys }, at });
           return { membershipId: target.id, userId: target.userId, self: target.userId === currentUser.id, revokedApiKeys };
@@ -720,6 +721,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const now = new Date().toISOString();
           const project = { id: createId('prj'), workspaceId, name: required(input.name, '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || '').trim(), starterKitId: kit.id, updatedAt: now, createdAt: now };
           data.projects.push(project);
+          let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); if (!preference) data.projectSelections.push({ id: createId('psl'), workspaceId, userId: currentUser.id, projectId: project.id, updatedAt: now }); else { preference.projectId = project.id; preference.updatedAt = now; }
           const contracts = definitions.map(item => ({ ...item, id: createId('ctr'), workspaceId, projectId: project.id, enabled: true, version: 1, createdAt: now, updatedAt: now }));
           data.contracts.unshift(...contracts);
           const criteria = contracts.map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: structuredClone(item.steps), version: item.version }));
@@ -730,7 +732,23 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         });
         return json(res, 201, created);
       }
-      if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
+      if (req.method === 'GET' && url.pathname === '/api/projects') {
+        const data = await store.read();
+        const projects = data.projects.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const storedProjectId = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id)?.projectId;
+        const selectedProjectId = projects.some(item => item.id === storedProjectId) ? storedProjectId : projects[0]?.id;
+        return json(res, 200, projects.map(item => ({ ...item, selected: item.id === selectedProjectId })));
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[2] && segments[3] === 'select') {
+        const selected = await store.update(data => {
+          const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId); if (!project) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); const now = new Date().toISOString();
+          if (!preference) { preference = { id: createId('psl'), workspaceId, userId: currentUser.id, projectId: project.id, updatedAt: now }; data.projectSelections.push(preference); }
+          else { preference.projectId = project.id; preference.updatedAt = now; }
+          return project;
+        });
+        return json(res, 200, selected);
+      }
       if (req.method === 'POST' && url.pathname === '/api/projects') {
         const input = await body(req); const repoPath = required(input.repo, '项目目录', 4096); const targetUrl = validateTargetUrl(required(input.url, '测试网址', 2048), allowedTargetOrigins).href;
         const project = await store.update(data => {
@@ -738,6 +756,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
           const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
+          let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); if (!preference) data.projectSelections.push({ id: createId('psl'), workspaceId, userId: currentUser.id, projectId: value.id, updatedAt: now }); else { preference.projectId = value.id; preference.updatedAt = now; }
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: existing ? 'project.updated' : 'project.created', entityType: 'project', entityId: value.id, details: { branch: value.branch, handoffMode: value.handoffMode }, at: now });
           return value;
         });

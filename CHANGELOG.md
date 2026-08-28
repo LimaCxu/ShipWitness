@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.16
+
+- Added a persistent top-bar project switcher with personal selection per workspace.
+- Kept contracts, run history, dashboard state, and task deep links aligned with the selected project.
+- Added workspace and user isolation tests, stale-selection fallback, and member-removal cleanup for project preferences.
+
 ## 0.4.0-dev.15
 
 - Added optional TLS-first SMTP notifications for workspace invitations, failed acceptance runs, and passed runs awaiting approval.
