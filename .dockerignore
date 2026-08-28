@@ -2,6 +2,7 @@
 .github
 node_modules
 data
+data/evidence
 test
 *.log
 .env*

@@ -1,18 +1,19 @@
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve } from 'node:path';
+import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { JsonStore, createId } from './lib/store.js';
+import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.2.0';
+const serviceVersion = '0.3.0';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -97,6 +98,7 @@ async function executeRun(project, run) {
 
 export function createApp({ storeFile = defaultStore } = {}) {
   const store = new JsonStore(storeFile);
+  const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -119,8 +121,8 @@ export function createApp({ storeFile = defaultStore } = {}) {
         const data = await store.read();
         const project = data.projects.find(item => item.id === segments[2]);
         if (!project) return json(res, 404, { error: '项目不存在' });
-        const [repo, target] = await Promise.all([checkRepository(project.repo), checkUrl(project.url)]);
-        const checks = { repo, url: target, browser: target.status === 'ready' ? { status: 'ready', detail: '可进入浏览器执行阶段' } : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
+        const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url), checkBrowserAvailability()]);
+        const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
         return json(res, 200, { projectId: project.id, checkedAt: new Date().toISOString(), checks });
       }
       if (req.method === 'GET' && url.pathname === '/api/contracts') {
@@ -137,7 +139,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
           const code = required(input.code, '标准编号').toUpperCase();
           if (data.contracts.some(item => item.projectId === input.projectId && item.code === code)) throw Object.assign(new Error('标准编号已存在'), { status: 409 });
           const now = new Date().toISOString();
-          const value = { id: createId('ctr'), projectId: input.projectId, code, title: required(input.title, '标准名称'), description: required(input.description, '标准描述'), category: input.category || '业务流程', severity: input.severity || 'blocker', enabled: input.enabled !== false, version: 1, createdAt: now, updatedAt: now };
+          const value = { id: createId('ctr'), projectId: input.projectId, code, title: required(input.title, '标准名称'), description: required(input.description, '标准描述'), category: input.category || '业务流程', severity: input.severity || 'blocker', steps: normalizeSteps(input.steps), enabled: input.enabled !== false, version: 1, createdAt: now, updatedAt: now };
           data.contracts.unshift(value);
           return value;
         });
@@ -153,6 +155,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
           if ('description' in input) current.description = required(input.description, '标准描述');
           if ('category' in input) current.category = required(input.category, '标准分类');
           if ('severity' in input) current.severity = required(input.severity, '严重级别');
+          if ('steps' in input) current.steps = normalizeSteps(input.steps);
           if ('enabled' in input) current.enabled = Boolean(input.enabled);
           current.version += 1;
           current.updatedAt = new Date().toISOString();
@@ -172,7 +175,7 @@ export function createApp({ storeFile = defaultStore } = {}) {
           if (!data.projects.some(item => item.id === input.projectId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
-          const criteria = supplied.length ? supplied : data.contracts.filter(item => item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, version: item.version }));
+          const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
           const value = { id: createId('run'), projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, status: 'queued', createdAt: new Date().toISOString() };
           data.runs.unshift(value); return value;
         });
@@ -187,7 +190,8 @@ export function createApp({ storeFile = defaultStore } = {}) {
         if (!project) return json(res, 409, { error: '任务关联的项目不存在' });
         await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'running'; current.startedAt = new Date().toISOString(); });
         try {
-          const execution = await executeRun(project, run);
+          const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
+          const execution = hasBrowserSteps ? await executeBrowserRun({ project, run, artifactsDir }) : await executeRun(project, run);
           const completed = await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString(); return current; });
           return json(res, 200, completed);
         } catch (error) {
@@ -210,6 +214,16 @@ export function createApp({ storeFile = defaultStore } = {}) {
         const run = data.runs.find(item => item.id === segments[2]);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
         return json(res, 200, { schema: 'shipwitness.dossier.v1', run, issues: data.issues.filter(item => item.runId === run.id), decisions: data.decisions.filter(item => item.runId === run.id) });
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'evidence' && segments[2] && segments[3] && segments.length === 4) {
+        const evidenceRoot = resolve(artifactsDir, segments[2]);
+        const file = resolve(evidenceRoot, normalize(segments[3]));
+        if (!file.startsWith(`${evidenceRoot}/`) || extname(file) !== '.png') return json(res, 403, { error: '禁止访问' });
+        try {
+          const content = await readFile(file);
+          res.writeHead(200, { ...securityHeaders, 'content-type': 'image/png', 'cache-control': 'private, max-age=3600' });
+          return res.end(content);
+        } catch { return json(res, 404, { error: '证据文件不存在' }); }
       }
 
       if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 404, { error: '接口不存在' });

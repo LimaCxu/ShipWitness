@@ -80,3 +80,28 @@ test('invalid payloads return a useful 400 response', async t => {
   assert.equal(result.status, 400);
   assert.equal(result.body.error, '项目目录不能为空');
 });
+
+test('browser executor performs a real assertion and records screenshot evidence', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-browser-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const project = await request(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '浏览器验收', repo: folder, url: `${base}/`, branch: 'main', handoffMode: 'file' }) });
+  const contract = await request(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, code: 'PAGE-01', title: '页面标题可见', description: '首页显示 ShipWitness 产品名', steps: [{ action: 'goto', path: '/' }, { action: 'expectText', selector: 'body', value: 'ShipWitness' }] }) });
+  assert.equal(contract.status, 201);
+  assert.equal(contract.body.steps.length, 2);
+
+  const run = await request(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '产品首页可以打开', criteria: [] }) });
+  const execution = await request(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' });
+  assert.equal(execution.status, 200);
+  assert.equal(execution.body.execution.executor, 'shipwitness-browser-v1');
+  assert.equal(execution.body.execution.verdict, 'passed');
+  assert.equal(execution.body.execution.criteriaResults[0].steps.length, 2);
+
+  const screenshot = await fetch(`${base}${execution.body.execution.criteriaResults[0].screenshotUrl}`);
+  assert.equal(screenshot.status, 200);
+  assert.equal(screenshot.headers.get('content-type'), 'image/png');
+  assert.ok((await screenshot.arrayBuffer()).byteLength > 1_000);
+});

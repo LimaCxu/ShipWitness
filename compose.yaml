@@ -1,7 +1,7 @@
 services:
   shipwitness:
     build: .
-    image: shipwitness:0.2.0
+    image: shipwitness:0.3.0
     ports:
       - "4173:4173"
     volumes:
