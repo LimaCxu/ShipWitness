@@ -221,6 +221,12 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
 
   const member = await authRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'member@example.com', password: 'member-password-123', role: 'member' }) });
   assert.equal(member.status, 201);
+  const membersBefore = await authRequest(base, '/api/members');
+  const ownerMembership = membersBefore.body.find(item => item.email === 'owner@example.com');
+  const lastOwnerDemotion = await authRequest(base, `/api/members/${ownerMembership.membershipId}`, { method: 'PATCH', body: JSON.stringify({ role: 'member' }) });
+  assert.equal(lastOwnerDemotion.status, 409);
+  const lastOwnerRemoval = await authRequest(base, `/api/members/${ownerMembership.membershipId}`, { method: 'DELETE' });
+  assert.equal(lastOwnerRemoval.status, 409);
   const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'member-password-123' }) });
   assert.equal(login.status, 200);
   const memberCookie = login.headers.get('set-cookie').split(';')[0];
@@ -229,10 +235,37 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   const forbiddenDecision = await authenticatedRequest(memberCookie)(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: 'run_unknown', owner: '普通成员', verdict: 'pass' }) });
   assert.equal(forbiddenDecision.status, 403);
 
-  const logout = await authenticatedRequest(memberCookie)(base, '/api/logout', { method: 'POST' });
-  assert.equal(logout.status, 200);
-  const expired = await authenticatedRequest(memberCookie)(base, '/api/session');
-  assert.equal(expired.status, 401);
+  const promoted = await authRequest(base, `/api/members/${member.body.membershipId}`, { method: 'PATCH', body: JSON.stringify({ role: 'owner' }) });
+  assert.equal(promoted.status, 200);
+  assert.equal(promoted.body.role, 'owner');
+  const memberOwnerRequest = authenticatedRequest(memberCookie);
+  const memberKey = await memberOwnerRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: '即将撤销的 Key', scopes: ['gate:read'] }) });
+  assert.equal(memberKey.status, 201);
+
+  const secondLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'member-password-123' }) });
+  const secondMemberCookie = secondLogin.headers.get('set-cookie').split(';')[0];
+  const passwordChanged = await memberOwnerRequest(base, '/api/account/password', { method: 'POST', body: JSON.stringify({ currentPassword: 'member-password-123', newPassword: 'member-password-456' }) });
+  assert.equal(passwordChanged.status, 200);
+  assert.equal((await authenticatedRequest(secondMemberCookie)(base, '/api/session')).status, 401);
+  assert.equal((await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'member-password-123' }) })).status, 401);
+  assert.equal((await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'member-password-456' }) })).status, 200);
+
+  const systemStatus = await authRequest(base, '/api/system/status');
+  assert.equal(systemStatus.status, 200);
+  assert.equal(systemStatus.body.audit.valid, true);
+  assert.equal(systemStatus.body.members, 2);
+
+  const removed = await authRequest(base, `/api/members/${member.body.membershipId}`, { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.revokedApiKeys, 1);
+  assert.equal((await memberOwnerRequest(base, '/api/session')).status, 401);
+  const revokedMachineKey = await request(base, '/api/gates/unknown', { headers: { authorization: `Bearer ${memberKey.body.token}` } });
+  assert.equal(revokedMachineKey.status, 401);
+
+  const auditAfterLifecycle = await authRequest(base, '/api/audit');
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.role_changed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.password_changed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.removed'));
 });
 
 test('browser executor performs a real assertion and records screenshot evidence', async t => {

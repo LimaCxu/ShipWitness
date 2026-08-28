@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.7';
+const serviceVersion = '0.4.0-dev.8';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -223,6 +223,19 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== cookieTokenHash); appendAudit(data, { workspaceId: session.workspaceId, actorUserId: currentUser.id, action: 'user.logout', entityType: 'user', entityId: currentUser.id }); });
         return json(res, 200, { ok: true }, { 'set-cookie': clearSessionCookie(secureCookie) });
       }
+      if (req.method === 'POST' && url.pathname === '/api/account/password') {
+        if (!session) return json(res, 403, { error: 'API Key 不能修改用户密码' });
+        const input = await body(req);
+        if (!await verifyPassword(input.currentPassword, currentUser.passwordHash)) return json(res, 400, { error: '当前密码错误' });
+        if (input.currentPassword === input.newPassword) return json(res, 400, { error: '新密码不能与当前密码相同' });
+        const passwordHash = await hashPassword(input.newPassword); const now = new Date().toISOString();
+        await store.update(data => {
+          const user = data.users.find(item => item.id === currentUser.id); user.passwordHash = passwordHash; user.passwordChangedAt = now;
+          data.sessions = data.sessions.filter(item => item.userId !== currentUser.id || item.tokenHash === cookieTokenHash);
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'user.password_changed', entityType: 'user', entityId: currentUser.id, at: now });
+        });
+        return json(res, 200, { ok: true, passwordChangedAt: now, otherSessionsRevoked: true });
+      }
 
       const requireRole = roles => {
         if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
@@ -264,6 +277,45 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const item = { id: createId('mem'), workspaceId, userId: user.id, role, createdAt: now }; data.memberships.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.added', entityType: 'membership', entityId: item.id, details: { userId: user.id, role }, at: now }); return { ...publicUser(user), role, membershipId: item.id };
         });
         return json(res, 201, member);
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'members' && segments[2]) {
+        requireRole(['owner']);
+        const input = await body(req); const role = input.role;
+        if (!['owner', 'approver', 'member'].includes(role)) return json(res, 400, { error: '成员角色无效' });
+        const changed = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.role === 'owner' && role !== 'owner' && data.memberships.filter(item => item.workspaceId === workspaceId && item.role === 'owner').length <= 1) throw Object.assign(new Error('工作区必须至少保留一名管理员'), { status: 409 });
+          const previousRole = target.role; target.role = role; target.updatedAt = new Date().toISOString();
+          if (previousRole !== role) appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.role_changed', entityType: 'membership', entityId: target.id, details: { userId: target.userId, from: previousRole, to: role }, at: target.updatedAt });
+          const user = data.users.find(item => item.id === target.userId); return { ...publicUser(user), role: target.role, membershipId: target.id };
+        });
+        return json(res, 200, changed);
+      }
+      if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'members' && segments[2]) {
+        requireRole(['owner']);
+        const removed = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.role === 'owner' && data.memberships.filter(item => item.workspaceId === workspaceId && item.role === 'owner').length <= 1) throw Object.assign(new Error('工作区必须至少保留一名管理员'), { status: 409 });
+          const at = new Date().toISOString(); data.memberships = data.memberships.filter(item => item.id !== target.id);
+          data.sessions = data.sessions.filter(item => item.userId !== target.userId || item.workspaceId !== workspaceId);
+          let revokedApiKeys = 0; for (const key of data.apiKeys.filter(item => item.workspaceId === workspaceId && item.createdByUserId === target.userId && !item.revokedAt)) { key.revokedAt = at; revokedApiKeys += 1; }
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.removed', entityType: 'membership', entityId: target.id, details: { userId: target.userId, role: target.role, revokedApiKeys }, at });
+          return { membershipId: target.id, userId: target.userId, self: target.userId === currentUser.id, revokedApiKeys };
+        });
+        return json(res, 200, removed, removed.self ? { 'set-cookie': clearSessionCookie(secureCookie) } : {});
+      }
+      if (req.method === 'GET' && url.pathname === '/api/system/status') {
+        requireRole(['owner', 'approver']);
+        const now = Date.now(); const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const deliveries = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId);
+        return json(res, 200, {
+          version: serviceVersion, storage: await store.health(), audit: verifyAuditChain(workspaceAudit),
+          members: authData.memberships.filter(item => item.workspaceId === workspaceId).length,
+          runs: { queued: workspaceRuns.filter(item => item.status === 'queued').length, running: workspaceRuns.filter(item => item.status === 'running').length, failed: workspaceRuns.filter(item => item.status === 'failed').length, stale: workspaceRuns.filter(item => item.status === 'running' && now - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length },
+          webhooks: { pending: deliveries.filter(item => ['queued', 'retrying', 'sending'].includes(item.status)).length, failed: deliveries.filter(item => item.status === 'failed').length },
+          checkedAt: new Date(now).toISOString()
+        });
       }
       if (req.method === 'GET' && url.pathname === '/api/audit') {
         requireRole(['owner', 'approver']);

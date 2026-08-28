@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.8
+
+- Added owner-controlled member role changes and removal with last-owner protection.
+- Revoked removed members' workspace sessions and active machine keys atomically.
+- Added self-service password changes that invalidate other sessions.
+- Added an owner/approver operations summary for queues, failures, storage, and audit integrity.
+
 ## 0.4.0-dev.7
 
 - Added explicit acceptance-target origin policy, redirect validation, and browser outbound-request blocking.

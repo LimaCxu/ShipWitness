@@ -16,7 +16,7 @@ services:
 
   shipwitness:
     build: .
-    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.7}
+    image: ${SHIPWITNESS_IMAGE:-shipwitness:0.4.0-dev.8}
     depends_on:
       postgres:
         condition: service_healthy
