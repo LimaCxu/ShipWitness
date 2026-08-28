@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.41
+
+- Added an owner-only backup center for PostgreSQL dump creation, evidence copying, restore-point listing, and SHA-256 verification.
+- Added guarded restore preflight with schema compatibility checks and a maintenance-mode command; live HTTP restore remains intentionally prohibited.
+- Successful verification now updates the running readiness report immediately and all backup lifecycle operations enter the audit chain.
+- Added strict backup identifier/path constraints and tamper-detection tests.
+
 ## 0.4.0-dev.40
 
 - Replaced the one-screen bootstrap form with a two-step deployment preflight and first-administrator wizard.

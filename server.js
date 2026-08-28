@@ -20,13 +20,14 @@ import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './l
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 import { releaseSupportStatus, supportPolicy } from './lib/support.js';
 import { consumeMfaCode, createRecoveryCodes, createTotpSecret, hashRecoveryCode, verifyTotp } from './lib/mfa.js';
+import { BackupManager, currentSchemaVersion } from './lib/backup-manager.js';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.40';
+const serviceVersion = '0.4.0-dev.41';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -266,9 +267,11 @@ const securityReviewSnapshot = (data, review, workspaceId, asOf = new Date()) =>
   return { review: { id: review.id, provider: review.provider, reference: review.reference, reviewedAt: review.reviewedAt, scope: review.scope, summary: review.summary }, findings, summary: { total: findings.length, critical: findings.filter(item => item.severity === 'critical').length, high: findings.filter(item => item.severity === 'high').length, medium: findings.filter(item => item.severity === 'medium').length, low: findings.filter(item => item.severity === 'low').length, verified: findings.filter(item => item.status === 'verified').length, riskAccepted: findings.filter(activeRiskAcceptance).length, expiredRiskAcceptances: findings.filter(item => item.status === 'risk_accepted' && !activeRiskAcceptance(item)).length, unresolved: findings.filter(item => item.status !== 'verified' && !activeRiskAcceptance(item)).length }, sourceUpdatedAt };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun, backupRoot = process.env.SHIPWITNESS_BACKUP_DIR || join(dirname(storeFile), 'backups'), backupManager: providedBackupManager } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
+  const backupManager = providedBackupManager || new BackupManager({ databaseUrl, artifactsDir, backupRoot, version, schemaVersion: currentSchemaVersion });
+  let verifiedBackupAt = lastVerifiedBackupAt || null;
   const loginAttempts = new Map();
   const resolvedEmailSender = emailSender === undefined ? createSmtpSender(emailConfiguration) : emailSender;
   const emailEnabled = typeof resolvedEmailSender === 'function';
@@ -832,6 +835,26 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         });
         return json(res, 200, removed, removed.self ? { 'set-cookie': clearSessionCookie(secureCookie) } : {});
       }
+      if (req.method === 'GET' && url.pathname === '/api/backups') {
+        requireRole(['owner']); const items = await backupManager.list();
+        return json(res, 200, { available: backupManager.available, reason: backupManager.available ? null : '可视化备份仅支持 PostgreSQL 部署', verifiedBackupAt, items });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/backups') {
+        requireRole(['owner']); const created = await backupManager.create();
+        await store.update(data => { appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'backup.created', entityType: 'backup', entityId: created.id, details: { applicationVersion: created.applicationVersion, schemaVersion: created.schemaVersion, evidenceFiles: created.evidenceFiles } }); });
+        return json(res, 201, created);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'backups' && segments[2] && segments[3] === 'verify') {
+        requireRole(['owner']); const verified = await backupManager.verify(segments[2]); verifiedBackupAt = verified.verifiedAt;
+        await store.update(data => { appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'backup.verified', entityType: 'backup', entityId: verified.id, details: { filesVerified: verified.filesVerified, applicationVersion: verified.applicationVersion, schemaVersion: verified.schemaVersion }, at: verified.verifiedAt }); });
+        return json(res, 200, verified);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'backups' && segments[2] && segments[3] === 'restore-preflight') {
+        requireRole(['owner']); const input = await body(req); if (input.confirmation !== `预检恢复 ${segments[2]}`) return json(res, 400, { error: `请输入“预检恢复 ${segments[2]}”确认` });
+        const preflight = await backupManager.restorePreflight(segments[2]); verifiedBackupAt = preflight.verifiedAt;
+        await store.update(data => { appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'backup.restore_preflighted', entityType: 'backup', entityId: preflight.id, details: { canRestore: preflight.canRestore, schemaCompatible: preflight.schemaCompatible, applicationVersion: preflight.applicationVersion, schemaVersion: preflight.schemaVersion }, at: preflight.verifiedAt }); });
+        return json(res, 200, preflight);
+      }
       if (req.method === 'GET' && url.pathname === '/api/system/status') {
         requireRole(['owner', 'approver']);
         const now = Date.now(); const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const deliveries = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId);
@@ -899,7 +922,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const now = new Date(); const storage = await store.health(); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId); const audit = verifyAuditChain(workspaceAudit);
         let masterKeyValid = false; try { keyFromSecret(signingSecret); masterKeyValid = true; } catch {}
         const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
-        const backupTime = lastVerifiedBackupAt ? new Date(lastVerifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
+        const backupTime = verifiedBackupAt ? new Date(verifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
         const recordedReview = authData.securityReviews.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.reviewedAt.localeCompare(a.reviewedAt))[0];
         const effectiveReviewReference = recordedReview?.reference || securityReviewReference; const effectiveReviewedAt = recordedReview?.reviewedAt || securityReviewedAt;
         const reviewTime = effectiveReviewedAt ? new Date(effectiveReviewedAt) : null; const reviewAgeDays = reviewTime ? (now.getTime() - reviewTime.getTime()) / 86_400_000 : null; const securityReviewFresh = Boolean(effectiveReviewReference && Number.isFinite(reviewAgeDays) && reviewAgeDays >= -0.1 && reviewAgeDays <= 365);

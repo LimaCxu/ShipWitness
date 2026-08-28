@@ -73,6 +73,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /password-reset\/request/);
   assert.match(frontendScriptText, /setupCheckList/);
   assert.match(frontendScriptText, /继续创建管理员/);
+  assert.match(frontendScriptText, /backupSection/);
+  assert.match(frontendScriptText, /restore-preflight/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -1037,6 +1039,28 @@ test('owners can suspend access, force sign-out and reset single-workspace MFA s
   const afterReset = await store.read(); assert.equal(Boolean(afterReset.users.find(item => item.id === member.body.id).mfaSecretEncrypted), false);
   const audit = await ownerRequest(base, '/api/audit');
   for (const action of ['member.sessions_revoked', 'member.disabled', 'member.enabled', 'member.mfa_reset']) assert.ok(audit.body.some(item => item.action === action));
+});
+
+test('backup center creates, verifies and preflights restore without mutating live data', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-backup-center-')); const now = new Date().toISOString();
+  const backupManager = {
+    available: true,
+    list: async () => [{ id: '2026-08-28T10-00-00-000Z', createdAt: now, applicationVersion: '0.4.0-dev.41', schemaVersion: 16, evidenceFiles: 3 }],
+    create: async () => ({ id: '2026-08-28T10-00-00-000Z', createdAt: now, applicationVersion: '0.4.0-dev.41', schemaVersion: 16, evidenceFiles: 3 }),
+    verify: async id => ({ id, valid: true, verifiedAt: new Date().toISOString(), filesVerified: 4, createdAt: now, applicationVersion: '0.4.0-dev.41', schemaVersion: 16 }),
+    restorePreflight: async id => ({ id, valid: true, verifiedAt: new Date().toISOString(), filesVerified: 4, createdAt: now, applicationVersion: '0.4.0-dev.41', schemaVersion: 16, schemaCompatible: true, canRestore: true, requiresMaintenanceMode: true, command: `SHIPWITNESS_RESTORE_CONFIRM=YES npm run restore -- /safe/${id}`, warning: '恢复会覆盖目标数据库。' })
+  };
+  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret, backupManager }); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  const listed = await ownerRequest(base, '/api/backups'); assert.equal(listed.status, 200); assert.equal(listed.body.items.length, 1); assert.equal(listed.body.verifiedBackupAt, null);
+  const created = await ownerRequest(base, '/api/backups', { method: 'POST' }); assert.equal(created.status, 201);
+  const verified = await ownerRequest(base, `/api/backups/${created.body.id}/verify`, { method: 'POST' }); assert.equal(verified.body.filesVerified, 4);
+  const badConfirmation = await ownerRequest(base, `/api/backups/${created.body.id}/restore-preflight`, { method: 'POST', body: JSON.stringify({ confirmation: '错误确认' }) }); assert.equal(badConfirmation.status, 400);
+  const preflight = await ownerRequest(base, `/api/backups/${created.body.id}/restore-preflight`, { method: 'POST', body: JSON.stringify({ confirmation: `预检恢复 ${created.body.id}` }) }); assert.equal(preflight.status, 200); assert.equal(preflight.body.canRestore, true); assert.equal(preflight.body.requiresMaintenanceMode, true);
+  const readiness = await ownerRequest(base, '/api/readiness'); assert.equal(readiness.body.checks.find(item => item.id === 'backup').status, 'pass');
+  const audit = await ownerRequest(base, '/api/audit'); for (const action of ['backup.created', 'backup.verified', 'backup.restore_preflighted']) assert.ok(audit.body.some(item => item.action === action));
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'backup-member@example.com', password: 'backup-member-password', role: 'member' }) }); assert.equal(member.status, 201);
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'backup-member@example.com', password: 'backup-member-password' }) }); const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]); assert.equal((await memberRequest(base, '/api/backups')).status, 403);
 });
 
 test('browser executor performs a real assertion and records screenshot evidence', async t => {
