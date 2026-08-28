@@ -37,6 +37,7 @@
 - [x] Encrypted acceptance credential vault with reference-safe rotation and active-contract deletion protection
 - [x] Pre-execution credential dependency diagnostics across contracts, project preflight, and run creation
 - [x] Acceptance credential lifetime, expiration visibility, and fail-closed execution enforcement
+- [x] Proactive acceptance-credential lifecycle alerts and readiness integration
 
 ## 1.0 — Self-hosted release gate
 

@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.47';
+const serviceVersion = '0.4.0-dev.48';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -232,10 +232,14 @@ const alertSignals = (data, workspaceId, now = Date.now()) => {
   const staleRuns = runs.filter(item => item.status === 'running' && now - new Date(item.startedAt || 0).getTime() > 15 * 60_000);
   const failedRuns = runs.filter(item => item.status === 'failed');
   const failedDeliveries = deliveries.filter(item => item.status === 'failed');
+  const secretStates = data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => ({ item, lifecycle: acceptanceSecretLifecycle(item, now) }));
+  const expiredSecrets = secretStates.filter(value => value.lifecycle.status === 'expired'); const expiringSecrets = secretStates.filter(value => value.lifecycle.status === 'expiring');
   if (!audit.valid) signals.push({ sourceKey: 'audit.integrity', severity: 'critical', title: '审计链完整性异常', detail: `发现断点 ${audit.brokenEventId || 'unknown'}，暂停依赖该审计链的发布决策。`, count: 1 });
   if (staleRuns.length) signals.push({ sourceKey: 'runs.stale', severity: 'critical', title: '验收任务长时间未结束', detail: `${staleRuns.length} 个任务运行超过 15 分钟，需要检查执行器或重新接管。`, count: staleRuns.length });
   if (failedDeliveries.length) signals.push({ sourceKey: 'webhooks.failed', severity: 'critical', title: 'Webhook 投递最终失败', detail: `${failedDeliveries.length} 个发布通知已耗尽重试次数，需要检查目标地址。`, count: failedDeliveries.length });
   if (failedRuns.length) signals.push({ sourceKey: 'runs.failed', severity: 'warning', title: '存在失败的验收任务', detail: `${failedRuns.length} 个任务执行失败，请查看证据和返工记录。`, count: failedRuns.length });
+  if (expiredSecrets.length) signals.push({ sourceKey: 'acceptance_secrets.expired', severity: 'critical', title: '验收凭据已经过期', detail: `${expiredSecrets.length} 个凭据已停止用于任务执行，请管理员立即轮换。`, count: expiredSecrets.length });
+  if (expiringSecrets.length) signals.push({ sourceKey: 'acceptance_secrets.expiring', severity: 'warning', title: '验收凭据即将到期', detail: `${expiringSecrets.length} 个凭据将在 14 天内到期，请安排轮换。`, count: expiringSecrets.length });
   return signals;
 };
 
@@ -973,12 +977,14 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
         const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
         const githubProjects = authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt && item.githubRepo).length;
+        const acceptanceSecretStates = authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => acceptanceSecretLifecycle(item, now.getTime())); const expiredAcceptanceSecrets = acceptanceSecretStates.filter(item => item.status === 'expired').length; const expiringAcceptanceSecrets = acceptanceSecretStates.filter(item => item.status === 'expiring').length;
         const privilegedUserIds = new Set(authData.memberships.filter(item => item.workspaceId === workspaceId && ['owner', 'approver'].includes(item.role)).map(item => item.userId)); const privilegedWithoutMfa = authData.users.filter(item => privilegedUserIds.has(item.id) && !item.mfaSecretEncrypted).length;
         const checks = [
           { id: 'postgres', category: '基础设施', label: '生产数据库', status: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? 'pass' : 'block', detail: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: String(storage.engine || '').toLowerCase().startsWith('postgresql') ? null : '配置 DATABASE_URL 并执行迁移' },
           { id: 'https', category: '访问安全', label: 'HTTPS 公网地址', status: publicHttps ? 'pass' : 'block', detail: publicHttps ? '已配置外部 HTTPS 地址，邀请和任务链接可安全生成。' : '未配置有效的 SHIPWITNESS_PUBLIC_URL HTTPS 地址。', action: publicHttps ? null : '在反向代理启用 HTTPS，并配置 SHIPWITNESS_PUBLIC_URL' },
           { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
           { id: 'privileged_mfa', category: '访问安全', label: '高权限账号两步验证', status: privilegedWithoutMfa ? 'warning' : 'pass', detail: privilegedWithoutMfa ? `${privilegedWithoutMfa} 个管理员或审批人尚未启用两步验证。` : `${privilegedUserIds.size} 个高权限账号均已启用两步验证。`, action: privilegedWithoutMfa ? '请管理员和审批人在账户安全中绑定 TOTP 验证器' : null },
+          { id: 'acceptance_credentials', category: '访问安全', label: '验收凭据生命周期', status: expiredAcceptanceSecrets || expiringAcceptanceSecrets ? 'warning' : 'pass', detail: expiredAcceptanceSecrets ? `${expiredAcceptanceSecrets} 个验收凭据已过期并停止执行。` : expiringAcceptanceSecrets ? `${expiringAcceptanceSecrets} 个验收凭据将在 14 天内到期。` : '没有已过期或即将到期的验收凭据。', action: expiredAcceptanceSecrets || expiringAcceptanceSecrets ? '在验收凭据保险箱中完成轮换' : null },
           { id: 'audit', category: '证据治理', label: '审计链完整性', status: audit.valid ? 'pass' : 'block', detail: audit.valid ? `${audit.checked} 条审计事件哈希链完整。` : `审计链异常：${audit.brokenEventId ? `事件 ${audit.brokenEventId}` : '完整性校验失败'}`, action: audit.valid ? null : '停止发布并调查审计链异常' },
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
           { id: 'recovery_drill', category: '灾备恢复', label: '90 天内隔离恢复演练', status: drillFresh ? 'pass' : 'warning', detail: drillFresh ? `最近恢复演练距今 ${drillAgeDays.toFixed(0)} 天，数据库与核心记录核验通过。` : '尚无最近 90 天内通过的隔离数据库恢复演练。', action: drillFresh ? null : '配置 SHIPWITNESS_DRILL_DATABASE_URL，并在备份中心执行恢复演练' },

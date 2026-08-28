@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.48
+
+- Added proactive critical alerts for expired acceptance credentials and warning alerts for credentials expiring within 14 days.
+- Credential lifecycle health now appears in the owner-only readiness report and prevents a clean production-candidate verdict while rotation work remains.
+- Alert refresh automatically resolves lifecycle alerts after credentials are renewed or removed.
+
 ## 0.4.0-dev.47
 
 - Added 30, 90, 180, and 365-day acceptance credential lifetimes with a secure 90-day default.

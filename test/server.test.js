@@ -74,6 +74,8 @@ test('acceptance credential vault is owner-only and never returns secret materia
   const expiredList = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(expiredList.body[0].status, 'expired'); assert.equal(expiredList.body[0].daysRemaining, 0);
   const expiredPreflight = await ownerRequest(base, `/api/projects/${project.body.id}/preflight`, { method: 'POST' }); assert.equal(expiredPreflight.body.checks.credentials.status, 'failed'); assert.deepEqual(expiredPreflight.body.checks.credentials.expiredSecretRefs, ['LOGIN_PASSWORD']);
   assert.equal((await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '过期凭据不得执行' }) })).status, 409);
+  const expiredAlerts = await ownerRequest(base, '/api/alerts/refresh', { method: 'POST' }); assert.equal(expiredAlerts.body.find(item => item.sourceKey === 'acceptance_secrets.expired').status, 'open');
+  const lifecycleReadiness = await ownerRequest(base, '/api/readiness'); assert.equal(lifecycleReadiness.body.checks.find(item => item.id === 'acceptance_credentials').status, 'warning');
   const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.some(item => item.action === 'acceptance_secret.rotated'), true); assert.equal(JSON.stringify(audit.body).includes(rotatedPlaintext), false);
 });
 

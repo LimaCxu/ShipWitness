@@ -15,6 +15,7 @@
 | 生产数据库 | 阻断 | 健康检查确认使用 PostgreSQL |
 | HTTPS 公网地址 | 阻断 | `SHIPWITNESS_PUBLIC_URL` 是无凭据的 HTTPS 地址 |
 | 主密钥 | 阻断 | `SHIPWITNESS_MASTER_KEY` 是规范的 32 字节 Base64 密钥 |
+| 验收凭据生命周期 | 警告 | 没有已过期或 14 天内到期的验收凭据 |
 | 高权限账号两步验证 | 警告 | 当前工作区所有管理员和审批人均已启用 TOTP 两步验证 |
 | 审计链完整性 | 阻断 | 当前工作区审计哈希链验证通过 |
 | 最近验证备份 | 警告 | `SHIPWITNESS_LAST_VERIFIED_BACKUP_AT` 记录在过去 24 小时内，且该时间只应在备份校验成功后写入 |
