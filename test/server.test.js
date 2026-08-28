@@ -656,6 +656,14 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   assert.equal(executed.body.execution.criteriaResults[0].result, 'passed');
   const verified = await ownerRequest(base, '/api/feedback?status=resolved');
   assert.equal(verified.body[0].id, created.body.id); assert.equal(verified.body[0].verification.runId, run.body.id); assert.equal(verified.body[0].verification.contractVersion, enabled.body.version);
+  assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'planned', note: '直接改回' }) })).status, 409);
+  assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}/reopen`, { method: 'POST', body: JSON.stringify({ reason: '' }) })).status, 400);
+  const reopened = await ownerRequest(base, `/api/feedback/${created.body.id}/reopen`, { method: 'POST', body: JSON.stringify({ reason: '试点成员报告相同问题再次出现' }) });
+  assert.equal(reopened.body.status, 'planned'); assert.equal(reopened.body.verification, undefined); assert.equal(reopened.body.verificationHistory.length, 1); assert.equal(reopened.body.verificationHistory[0].runId, run.body.id);
+  const retry = await ownerRequest(base, `/api/runs/${run.body.id}/retry`, { method: 'POST' });
+  await ownerRequest(base, `/api/runs/${retry.body.id}/execute`, { method: 'POST' });
+  const reverified = await ownerRequest(base, '/api/feedback?status=resolved');
+  assert.equal(reverified.body[0].verification.runId, retry.body.id); assert.equal(reverified.body[0].verificationHistory.length, 1);
   const exported = await ownerRequest(base, '/api/feedback/export');
   assert.equal(exported.body.schema, 'shipwitness.pilot-feedback.v1'); assert.equal(exported.body.items.length, 1); assert.match(exported.headers.get('content-disposition'), /attachment/);
 
@@ -666,6 +674,7 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   assert.ok(audit.body.some(item => item.action === 'feedback.created'));
   assert.ok(audit.body.some(item => item.action === 'feedback.promoted'));
   assert.ok(audit.body.some(item => item.action === 'feedback.status_changed'));
+  assert.ok(audit.body.some(item => item.action === 'feedback.reopened'));
   assert.ok(audit.body.some(item => item.action === 'feedback.verified_by_run'));
   assert.ok(audit.body.some(item => item.action === 'feedback.exported'));
 });

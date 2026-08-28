@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.34';
+const serviceVersion = '0.4.0-dev.35';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -1288,6 +1288,19 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         });
         return json(res, 201, result);
       }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'feedback' && segments[2] && segments[3] === 'reopen' && segments.length === 4) {
+        requireRole(['owner', 'approver']); const input = await body(req); const reason = required(input.reason, '重新打开原因', 1000); const now = new Date().toISOString();
+        const feedback = await store.update(data => {
+          const current = data.pilotFeedback.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!current) throw Object.assign(new Error('试点反馈不存在'), { status: 404 });
+          if (!['resolved', 'declined'].includes(current.status)) throw Object.assign(new Error('只有已结束的反馈才能重新打开'), { status: 409 });
+          const previousStatus = current.status; const previousVerification = current.verification ? structuredClone(current.verification) : null;
+          if (previousVerification) { current.verificationHistory ||= []; current.verificationHistory.push(previousVerification); delete current.verification; }
+          current.status = current.linkedContractId ? 'planned' : 'triaged'; current.updatedAt = now; current.timeline ||= []; current.timeline.push({ status: current.status, at: now, actorUserId: currentUser.id, note: `重新打开：${reason}` });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.reopened', entityType: 'pilot_feedback', entityId: current.id, details: { from: previousStatus, to: current.status, reason, previousVerificationRunId: previousVerification?.runId || null }, at: now }); return current;
+        });
+        return json(res, 200, feedback);
+      }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'feedback' && segments[2] && segments.length === 3) {
         requireRole(['owner', 'approver']); const input = await body(req); const allowed = ['new', 'triaged', 'planned', 'resolved', 'declined'];
         if (!allowed.includes(input.status)) return json(res, 400, { error: '反馈状态无效' });
@@ -1296,6 +1309,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const feedback = await store.update(data => {
           const current = data.pilotFeedback.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!current) throw Object.assign(new Error('试点反馈不存在'), { status: 404 });
+          if (['resolved', 'declined'].includes(current.status) && current.status !== input.status) throw Object.assign(new Error('已结束的反馈必须通过“重新打开”保留处理历史'), { status: 409 });
           if (current.status === input.status) return current;
           const from = current.status; current.status = input.status; current.updatedAt = new Date().toISOString(); current.timeline ||= []; current.timeline.push({ status: input.status, at: current.updatedAt, actorUserId: currentUser.id, note });
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.status_changed', entityType: 'pilot_feedback', entityId: current.id, details: { from, to: input.status, note }, at: current.updatedAt }); return current;

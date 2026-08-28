@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.35
+
+- Added an explicit manager-only reopen workflow for resolved or declined pilot feedback.
+- Required a regression reason, preserved prior verification records, and returned linked feedback to the correct triage stage.
+- Prevented direct state changes from overwriting a closed result and supported evidence-backed re-verification after retry runs.
+
 ## 0.4.0-dev.34
 
 - Snapshotted authoritative feedback provenance into acceptance runs while stripping caller-supplied provenance.
