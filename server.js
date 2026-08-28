@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.33';
+const serviceVersion = '0.4.0-dev.34';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -947,7 +947,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); if (!preference) data.projectSelections.push({ id: createId('psl'), workspaceId, userId: currentUser.id, projectId: project.id, updatedAt: now }); else { preference.projectId = project.id; preference.updatedAt = now; }
           const contracts = definitions.map(item => ({ ...item, id: createId('ctr'), workspaceId, projectId: project.id, enabled: true, version: 1, createdAt: now, updatedAt: now }));
           data.contracts.unshift(...contracts);
-          const criteria = contracts.map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: structuredClone(item.steps), version: item.version }));
+          const criteria = contracts.map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: structuredClone(item.steps), version: item.version, ...(item.sourceFeedbackId ? { sourceFeedbackId: item.sourceFeedbackId } : {}) }));
           const run = { id: createId('run'), workspaceId, projectId: project.id, requirement: required(input.requirement || `验证${project.name}的${kit.name}发布基线`, '原始需求'), criteria, status: 'queued', attemptNumber: 1, createdByUserId: currentUser.id, starterKitId: kit.id, createdAt: now };
           data.runs.unshift(run);
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'starter_kit.applied', entityType: 'project', entityId: project.id, details: { kitId: kit.id, contractCount: contracts.length, runId: run.id }, at: now });
@@ -1168,7 +1168,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (!project) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
-          const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
+          const criteria = supplied.length ? supplied.map(item => { const { sourceFeedbackId: ignored, ...safe } = item; return { ...safe, steps: normalizeSteps(item.steps) }; }) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version, ...(item.sourceFeedbackId ? { sourceFeedbackId: item.sourceFeedbackId } : {}) }));
           const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, repositorySnapshot: project.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
           data.runs.unshift(value);
           if (versionedApi && apiKey) data.idempotencyRecords.unshift({ id: createId('idem'), workspaceId, apiKeyId: apiKey.id, operation: 'run.create', key: idempotencyKey, requestHash, entityId: value.id, createdAt: value.createdAt });
@@ -1217,6 +1217,13 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
               issue.timeline ||= [];
               issue.timeline.push({ status: issue.status, at: current.completedAt, note: execution.verdict === 'passed' ? '定向复验通过' : `定向复验未通过：${execution.summary}` });
             }
+            current.criteria.forEach((criterion, index) => {
+              if (!criterion.sourceFeedbackId || execution.criteriaResults?.[index]?.result !== 'passed') return;
+              const feedback = data.pilotFeedback.find(item => item.id === criterion.sourceFeedbackId && item.workspaceId === workspaceId && item.linkedContractId === criterion.contractId && item.status === 'planned');
+              if (!feedback) return;
+              const result = execution.criteriaResults[index]; feedback.status = 'resolved'; feedback.updatedAt = current.completedAt; feedback.verification = { runId: current.id, contractId: criterion.contractId, contractVersion: criterion.version, criterionResultId: result.id, executor: execution.executor, verifiedAt: current.completedAt }; feedback.timeline ||= []; feedback.timeline.push({ status: 'resolved', at: current.completedAt, actorUserId: currentUser.id, note: `验收任务 ${current.id} 的来源标准已通过真实断言` });
+              appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'feedback.verified_by_run', entityType: 'pilot_feedback', entityId: feedback.id, details: { runId: current.id, contractId: criterion.contractId, contractVersion: criterion.version, criterionResultId: result.id }, at: current.completedAt });
+            });
             appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.completed', entityType: 'run', entityId: current.id, details: { verdict: execution.verdict, executor: execution.executor, attemptNumber: current.attemptNumber || 1, recoveryCount: current.recoveryCount || 0 }, at: current.completedAt });
             if (['passed', 'failed'].includes(execution.verdict)) {
               const projectName = data.projects.find(item => item.id === current.projectId)?.name || '未命名项目'; const runUrl = publicUrl ? `${publicUrl}/?run=${encodeURIComponent(current.id)}` : null;

@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.34
+
+- Snapshotted authoritative feedback provenance into acceptance runs while stripping caller-supplied provenance.
+- Automatically resolved planned feedback only when its exact linked contract result passed with assertion evidence.
+- Stored the verifying run, contract version, criterion result, executor, and timestamp, with a direct evidence link in the feedback center.
+
 ## 0.4.0-dev.33
 
 - Added manager-controlled conversion from project feedback to a disabled acceptance-contract draft.

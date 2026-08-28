@@ -614,7 +614,7 @@ test('stale sending webhook delivery is reclaimed after an interrupted worker', 
 
 test('pilot feedback is workspace-scoped, role-managed, auditable and exportable', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-feedback-'));
-  const server = createApp({ storeFile: join(folder, 'store.json') });
+  const server = createApp({ storeFile: join(folder, 'store.json'), browserRunExecutor: async ({ run }) => ({ executor: 'test-browser', verdict: 'passed', summary: '来源标准真实断言通过', criteriaResults: run.criteria.map((item, index) => ({ id: `criterion-${index + 1}`, title: item.title, result: 'passed', reason: '测试断言通过' })) }) });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -637,14 +637,25 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   assert.ok(inbox.body.items.some(item => item.action.kind === 'feedback' && item.action.id === created.body.id));
   const listed = await ownerRequest(base, '/api/feedback?status=new');
   assert.equal(listed.body.length, 1); assert.equal(listed.body[0].reporter.name, '试点成员'); assert.equal(listed.body[0].project.name, '试点项目');
+  assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'triaged', note: '确认需要纳入验收' }) })).body.status, 'triaged');
   const promoted = await ownerRequest(base, `/api/feedback/${created.body.id}/promote`, { method: 'POST', body: JSON.stringify({ title: '反馈入口清晰可见', expectedResult: '登录后顶部必须显示可操作的反馈入口。' }) });
   assert.equal(promoted.status, 201); assert.equal(promoted.body.feedback.status, 'planned'); assert.equal(promoted.body.contract.enabled, false); assert.equal(promoted.body.contract.sourceFeedbackId, created.body.id);
   assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}/promote`, { method: 'POST', body: JSON.stringify({ expectedResult: '不得重复' }) })).status, 409);
   const contracts = await ownerRequest(base, `/api/contracts?projectId=${project.body.id}`);
   assert.equal(contracts.body.filter(item => item.sourceFeedbackId === created.body.id).length, 1);
   assert.equal((await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) })).status, 400);
-  const updated = await ownerRequest(base, `/api/feedback/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved', note: '已在新版本中提供顶部入口并完成验收' }) });
-  assert.equal(updated.body.status, 'resolved'); assert.match(updated.body.timeline.at(-1).note, /完成验收/);
+  const spoofed = await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '调用方不能伪造反馈来源', criteria: [{ contractId: promoted.body.contract.id, sourceFeedbackId: created.body.id, code: 'FAKE-01', title: '伪造来源', description: '不应关闭反馈', steps: [{ action: 'expectText', selector: 'body', value: 'ShipWitness' }] }] }) });
+  assert.equal(spoofed.body.criteria[0].sourceFeedbackId, undefined);
+  await ownerRequest(base, `/api/runs/${spoofed.body.id}/execute`, { method: 'POST' });
+  assert.equal((await ownerRequest(base, '/api/feedback?status=planned')).body[0].id, created.body.id);
+  const enabled = await ownerRequest(base, `/api/contracts/${promoted.body.contract.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: true, steps: [{ action: 'goto', path: '/' }, { action: 'expectText', selector: 'body', value: 'ShipWitness' }] }) });
+  assert.equal(enabled.body.enabled, true);
+  const run = await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '验证反馈修复已经达到正确结果', criteria: [] }) });
+  assert.equal(run.body.criteria[0].sourceFeedbackId, created.body.id);
+  const executed = await ownerRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' });
+  assert.equal(executed.body.execution.criteriaResults[0].result, 'passed');
+  const verified = await ownerRequest(base, '/api/feedback?status=resolved');
+  assert.equal(verified.body[0].id, created.body.id); assert.equal(verified.body[0].verification.runId, run.body.id); assert.equal(verified.body[0].verification.contractVersion, enabled.body.version);
   const exported = await ownerRequest(base, '/api/feedback/export');
   assert.equal(exported.body.schema, 'shipwitness.pilot-feedback.v1'); assert.equal(exported.body.items.length, 1); assert.match(exported.headers.get('content-disposition'), /attachment/);
 
@@ -655,6 +666,7 @@ test('pilot feedback is workspace-scoped, role-managed, auditable and exportable
   assert.ok(audit.body.some(item => item.action === 'feedback.created'));
   assert.ok(audit.body.some(item => item.action === 'feedback.promoted'));
   assert.ok(audit.body.some(item => item.action === 'feedback.status_changed'));
+  assert.ok(audit.body.some(item => item.action === 'feedback.verified_by_run'));
   assert.ok(audit.body.some(item => item.action === 'feedback.exported'));
 });
 
