@@ -219,6 +219,60 @@ test('failed executor preserves failure evidence and can create a separate retry
   assert.equal((await authRequest(base, `/api/runs/${run.body.id}`)).body.status, 'failed');
 });
 
+test('workspace invitations are one-time, revocable, expiring and support existing accounts', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-invite-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+
+  const created = await ownerRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ name: '受邀成员', email: 'invited@example.com', role: 'approver', expiresInHours: 24 }) });
+  assert.equal(created.status, 201);
+  assert.match(created.body.token, /^swi_/);
+  assert.match(created.body.invitePath, /^\/?\?invite=/);
+  const listed = await ownerRequest(base, '/api/invitations');
+  assert.equal(listed.body[0].status, 'pending');
+  assert.equal('tokenHash' in listed.body[0], false);
+  const preview = await request(base, `/api/invitations/${created.body.token}`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.existingAccount, false);
+  assert.equal(preview.body.workspace.id, undefined);
+  assert.match(preview.body.maskedEmail, /\*\*\*@/);
+  assert.equal((await request(base, `/api/invitations/${'x'.repeat(201)}`)).status, 410);
+  const accepted = await request(base, `/api/invitations/${created.body.token}`, { method: 'POST', body: JSON.stringify({ name: '受邀成员', password: 'invited-password-123' }) });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.role, 'approver');
+  const invitedCookie = accepted.headers.get('set-cookie').split(';')[0];
+  assert.equal((await authenticatedRequest(invitedCookie)(base, '/api/session')).body.user.email, 'invited@example.com');
+  assert.equal((await request(base, `/api/invitations/${created.body.token}`)).status, 410);
+
+  const revoked = await ownerRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'revoked@example.com', role: 'member' }) });
+  assert.equal((await ownerRequest(base, `/api/invitations/${revoked.body.id}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await request(base, `/api/invitations/${revoked.body.token}`)).status, 410);
+  assert.equal((await ownerRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'invalid-expiry@example.com', expiresInHours: 0 }) })).status, 400);
+  const expired = await ownerRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'expired@example.com', expiresInHours: 1 }) });
+  const inviteStore = new JsonStore(join(folder, 'store.json'));
+  await inviteStore.update(data => { data.invitations.find(item => item.id === expired.body.id).expiresAt = new Date(Date.now() - 1_000).toISOString(); });
+  assert.equal((await request(base, `/api/invitations/${expired.body.token}`)).status, 410);
+  const firstWorkspaceAudit = await ownerRequest(base, '/api/audit');
+  assert.ok(firstWorkspaceAudit.body.some(item => item.action === 'invitation.created'));
+  assert.ok(firstWorkspaceAudit.body.some(item => item.action === 'invitation.revoked'));
+  assert.ok(firstWorkspaceAudit.body.some(item => item.action === 'invitation.accepted'));
+
+  const workspaceTwo = await ownerRequest(base, '/api/workspaces', { method: 'POST', body: JSON.stringify({ name: '第二工作区' }) });
+  assert.equal(workspaceTwo.status, 201);
+  const existingInvite = await ownerRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'invited@example.com', role: 'member' }) });
+  assert.equal((await request(base, `/api/invitations/${existingInvite.body.token}`)).body.existingAccount, true);
+  assert.equal((await request(base, `/api/invitations/${existingInvite.body.token}`, { method: 'POST', body: JSON.stringify({ password: 'wrong-password' }) })).status, 401);
+  const existingAccepted = await request(base, `/api/invitations/${existingInvite.body.token}`, { method: 'POST', body: JSON.stringify({ password: 'invited-password-123' }) });
+  assert.equal(existingAccepted.status, 200);
+  assert.equal(existingAccepted.body.workspace.id, workspaceTwo.body.id);
+
+  const secondWorkspaceAudit = await ownerRequest(base, '/api/audit');
+  assert.ok(secondWorkspaceAudit.body.some(item => item.action === 'invitation.created'));
+  assert.ok(secondWorkspaceAudit.body.some(item => item.action === 'invitation.accepted'));
+});
+
 test('stale sending webhook delivery is reclaimed after an interrupted worker', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-webhook-lease-')); const store = new JsonStore(join(folder, 'store.json'));
   await store.update(data => {
@@ -336,7 +390,7 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   });
   const preview = await authRequest(base, '/api/retention/preview');
   assert.equal(preview.body.total, 3);
-  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, alerts: 1 });
+  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, alerts: 1, invitations: 0 });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: 'wrong' }) })).status, 409);
   await store.update(data => { data.sessions.find(item => item.id === 'ses_expired_cleanup').id = 'ses_expired_replaced'; });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: preview.body.token }) })).status, 409);

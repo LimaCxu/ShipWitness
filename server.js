@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.11';
+const serviceVersion = '0.4.0-dev.12';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -62,6 +62,8 @@ const normalizedEmail = value => {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('邮箱格式无效'), { status: 400 });
   return email;
 };
+
+const maskedEmail = value => { const [local, domain] = String(value).split('@'); return `${local.slice(0, 2)}${local.length > 2 ? '***' : '*'}@${domain}`; };
 
 const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
@@ -159,8 +161,9 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   const sessions = data.sessions.filter(item => item.workspaceId === workspaceId && new Date(item.expiresAt) < cutoff);
   const webhookDeliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
   const alerts = data.alerts.filter(item => item.workspaceId === workspaceId && item.status === 'resolved' && new Date(item.resolvedAt || item.createdAt) < cutoff);
-  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, alerts: alerts.length };
-  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort() };
+  const invitations = data.invitations.filter(item => item.workspaceId === workspaceId && (item.acceptedAt || item.revokedAt || new Date(item.expiresAt) <= asOf) && new Date(item.acceptedAt || item.revokedAt || item.expiresAt) < cutoff);
+  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, alerts: alerts.length, invitations: invitations.length };
+  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const token = createHash('sha256').update(JSON.stringify({ workspaceId, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, ids })).digest('hex');
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
@@ -244,6 +247,34 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const workspace = data.workspaces.find(item => item.id === membership.workspaceId);
         return json(res, 200, { user: publicUser(user), workspace, role: membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
       }
+      if (segments[0] === 'api' && segments[1] === 'invitations' && segments[2] && segments.length === 3 && ['GET', 'POST'].includes(req.method)) {
+        if (segments[2].length > 200) return json(res, 410, { error: '邀请链接无效或已过期' });
+        const tokenHash = sessionTokenHash(segments[2]); const snapshot = await store.read();
+        const invitation = snapshot.invitations.find(item => item.tokenHash === tokenHash);
+        if (!invitation || invitation.revokedAt || invitation.acceptedAt || new Date(invitation.expiresAt) <= new Date()) return json(res, 410, { error: '邀请链接无效或已过期' });
+        const workspace = snapshot.workspaces.find(item => item.id === invitation.workspaceId);
+        const existingUser = snapshot.users.find(item => item.email === invitation.email);
+        if (req.method === 'GET') return json(res, 200, { workspace: { name: workspace.name }, maskedEmail: maskedEmail(invitation.email), role: invitation.role, expiresAt: invitation.expiresAt, existingAccount: Boolean(existingUser) });
+        const input = await body(req); let passwordHash = null;
+        if (existingUser) {
+          if (!await verifyPassword(input.password, existingUser.passwordHash)) return json(res, 401, { error: '账号密码错误' });
+        } else passwordHash = await hashPassword(input.password);
+        const token = createSessionToken(); const now = new Date().toISOString();
+        const accepted = await store.update(data => {
+          const current = data.invitations.find(item => item.id === invitation.id && item.tokenHash === tokenHash);
+          if (!current || current.revokedAt || current.acceptedAt || new Date(current.expiresAt) <= new Date()) throw Object.assign(new Error('邀请链接无效或已过期'), { status: 410 });
+          let user = data.users.find(item => item.email === current.email);
+          if (!user) { user = { id: createId('usr'), email: current.email, name: required(input.name, '姓名'), passwordHash, createdAt: now }; data.users.push(user); }
+          else if (!existingUser || user.id !== existingUser.id) throw Object.assign(new Error('账号状态已变化，请重新打开邀请'), { status: 409 });
+          if (data.memberships.some(item => item.workspaceId === current.workspaceId && item.userId === user.id)) throw Object.assign(new Error('账号已经加入该工作区'), { status: 409 });
+          const membership = { id: createId('mem'), workspaceId: current.workspaceId, userId: user.id, role: current.role, createdAt: now };
+          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: current.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now };
+          current.acceptedAt = now; current.acceptedByUserId = user.id; data.memberships.push(membership); data.sessions.push(session);
+          appendAudit(data, { workspaceId: current.workspaceId, actorUserId: user.id, action: 'invitation.accepted', entityType: 'invitation', entityId: current.id, details: { role: current.role, existingAccount: Boolean(existingUser) }, at: now });
+          return { user, membership, workspace: data.workspaces.find(item => item.id === current.workspaceId) };
+        });
+        return json(res, 200, { user: publicUser(accepted.user), workspace: accepted.workspace, role: accepted.membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
+      }
 
       const authData = await store.read();
       const cookieToken = readSessionToken(req.headers.cookie);
@@ -325,6 +356,36 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const item = { id: createId('mem'), workspaceId, userId: user.id, role, createdAt: now }; data.memberships.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.added', entityType: 'membership', entityId: item.id, details: { userId: user.id, role }, at: now }); return { ...publicUser(user), role, membershipId: item.id };
         });
         return json(res, 201, member);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/invitations') {
+        requireRole(['owner']); const now = new Date();
+        return json(res, 200, authData.invitations.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(({ tokenHash: hidden, ...item }) => ({ ...item, status: item.acceptedAt ? 'accepted' : item.revokedAt ? 'revoked' : new Date(item.expiresAt) <= now ? 'expired' : 'pending' })));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/invitations') {
+        requireRole(['owner']);
+        const input = await body(req); const email = normalizedEmail(input.email); const role = input.role || 'member'; const expiresInHours = Number(input.expiresInHours ?? 72);
+        if (!['owner', 'approver', 'member'].includes(role)) return json(res, 400, { error: '成员角色无效' });
+        if (!Number.isInteger(expiresInHours) || expiresInHours < 1 || expiresInHours > 168) return json(res, 400, { error: '邀请有效期必须是 1 到 168 小时' });
+        const token = `swi_${randomBytes(32).toString('base64url')}`; const now = new Date();
+        const created = await store.update(data => {
+          const user = data.users.find(item => item.email === email);
+          if (user && data.memberships.some(item => item.workspaceId === workspaceId && item.userId === user.id)) throw Object.assign(new Error('该用户已经是工作区成员'), { status: 409 });
+          for (const item of data.invitations.filter(item => item.workspaceId === workspaceId && item.email === email && !item.acceptedAt && !item.revokedAt && new Date(item.expiresAt) > now)) { item.revokedAt = now.toISOString(); item.revokedByUserId = currentUser.id; item.revokeReason = 'replaced'; }
+          const invitation = { id: createId('inv'), workspaceId, email, suggestedName: String(input.name || '').trim().slice(0, 200), role, tokenHash: sessionTokenHash(token), tokenSuffix: token.slice(-6), expiresAt: new Date(now.getTime() + expiresInHours * 3600_000).toISOString(), createdByUserId: currentUser.id, createdAt: now.toISOString() };
+          data.invitations.unshift(invitation); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'invitation.created', entityType: 'invitation', entityId: invitation.id, details: { email, role, expiresAt: invitation.expiresAt }, at: invitation.createdAt }); return invitation;
+        });
+        const { tokenHash: hidden, ...safe } = created; return json(res, 201, { ...safe, token, invitePath: `/?invite=${encodeURIComponent(token)}` });
+      }
+      if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'invitations' && segments[2]) {
+        requireRole(['owner']);
+        const revoked = await store.update(data => {
+          const invitation = data.invitations.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!invitation) throw Object.assign(new Error('邀请不存在'), { status: 404 });
+          if (invitation.acceptedAt) throw Object.assign(new Error('已接受的邀请不能撤销'), { status: 409 });
+          if (!invitation.revokedAt) { invitation.revokedAt = new Date().toISOString(); invitation.revokedByUserId = currentUser.id; invitation.revokeReason = 'owner'; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'invitation.revoked', entityType: 'invitation', entityId: invitation.id, details: { email: invitation.email }, at: invitation.revokedAt }); }
+          return invitation;
+        });
+        return json(res, 200, { id: revoked.id, revokedAt: revoked.revokedAt });
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'members' && segments[2] && segments[3] === 'password') {
         requireRole(['owner']);
@@ -470,8 +531,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const preview = retentionPreview(data, workspaceId, asOf);
           if (input.token !== preview.token) throw Object.assign(new Error('数据已经变化，请重新预览后再清理'), { status: 409 });
           if (!preview.total) throw Object.assign(new Error('没有符合条件的运营数据'), { status: 409 });
-          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const alertIds = new Set(preview.ids.alerts);
-          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id));
+          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
+          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
           const now = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.cleaned', entityType: 'workspace', entityId: workspaceId, details: { cutoff: preview.cutoff, counts: preview.counts, total: preview.total }, at: now });
           return { cleanedAt: now, cutoff: preview.cutoff, counts: preview.counts, total: preview.total };
         });

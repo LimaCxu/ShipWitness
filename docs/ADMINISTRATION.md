@@ -4,12 +4,14 @@
 
 Owners manage members under **工作区管理 → 成员与角色**.
 
-- Adding a new email creates a user with the supplied initial password. Share it through a separate secure channel.
-- Adding an email that already has a ShipWitness account grants workspace membership without changing that user's password.
+- The management panel creates a one-time invitation instead of asking the owner to choose a member password. Share the link through a separate secure channel.
+- New users choose their own password. Existing ShipWitness users confirm their current password and gain the additional workspace membership without changing credentials.
 - Owners can assign `member`, `approver`, or `owner`.
 - A workspace must always retain at least one owner. The API rejects removal or demotion of the last owner.
 - Removing a member immediately removes the membership, revokes every session for that user in the workspace, and revokes active workspace API keys created by that user. Historical audit events and authored records remain intact.
 - Removing a user from one workspace does not remove their memberships or sessions in other workspaces.
+
+Invitation expiry, revocation, replacement, and acceptance behavior is documented in [INVITATIONS.md](INVITATIONS.md). The direct member-creation API remains available for controlled backward compatibility, but the product UI defaults to invitations.
 
 ## Password changes
 

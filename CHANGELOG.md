@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.12
+
+- Added hashed, one-time workspace invitation links with configurable expiry and owner revocation.
+- Let new users choose their own password while existing users confirm their current account password.
+- Added invitation status management, cross-workspace acceptance, audit events, and retention cleanup for inactive invitations.
+
 ## 0.4.0-dev.11
 
 - Made completed and failed acceptance evidence immutable instead of overwriting it on rerun.
