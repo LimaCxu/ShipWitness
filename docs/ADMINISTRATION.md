@@ -1,5 +1,11 @@
 # Workspace administration
 
+## Login devices and sessions
+
+Every member can view their own active login devices under **工作区设置 → 团队 → 账户安全**. The list never exposes another member's sessions. It shows a safe browser/platform summary plus login and expiry times.
+
+A member can revoke any non-current device. That device loses access immediately and the action is appended to the workspace audit chain. The current device must use the top-bar **退出** action so an accidental click cannot interrupt active administration work. Changing the password still revokes every other session for the account at once.
+
 ## Member lifecycle
 
 Owners manage members under **工作区管理 → 成员与角色**.

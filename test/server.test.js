@@ -60,6 +60,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /workspaceIdentityForm/);
   assert.match(frontendScriptText, /feedbackPanel/);
   assert.match(frontendScriptText, /feedbackActionDialog/);
+  assert.match(frontendScriptText, /session-management/);
+  assert.match(frontendScriptText, /data-revoke-session/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -835,8 +837,20 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   const memberKey = await memberOwnerRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: '即将撤销的 Key', scopes: ['gate:read'] }) });
   assert.equal(memberKey.status, 201);
 
-  const secondLogin = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'member@example.com', password: 'member-password-123' }) });
+  const secondLogin = await request(base, '/api/login', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'ShipWitness-Test-Secondary/1.0' }, body: JSON.stringify({ email: 'member@example.com', password: 'member-password-123' }) });
   const secondMemberCookie = secondLogin.headers.get('set-cookie').split(';')[0];
+  const memberSessions = await memberOwnerRequest(base, '/api/account/sessions');
+  assert.equal(memberSessions.status, 200);
+  assert.equal(memberSessions.body.length, 2);
+  assert.equal(memberSessions.body.filter(item => item.current).length, 1);
+  const secondarySession = memberSessions.body.find(item => item.userAgent === 'ShipWitness-Test-Secondary/1.0');
+  assert.ok(secondarySession);
+  const currentSessionRecord = memberSessions.body.find(item => item.current);
+  assert.equal((await memberOwnerRequest(base, `/api/account/sessions/${currentSessionRecord.id}/revoke`, { method: 'POST' })).status, 409);
+  const revokedSession = await memberOwnerRequest(base, `/api/account/sessions/${secondarySession.id}/revoke`, { method: 'POST' });
+  assert.equal(revokedSession.status, 200);
+  assert.equal((await authenticatedRequest(secondMemberCookie)(base, '/api/session')).status, 401);
+  assert.equal((await memberOwnerRequest(base, '/api/account/sessions')).body.length, 1);
   const passwordChanged = await memberOwnerRequest(base, '/api/account/password', { method: 'POST', body: JSON.stringify({ currentPassword: 'member-password-123', newPassword: 'member-password-456' }) });
   assert.equal(passwordChanged.status, 200);
   assert.equal((await authenticatedRequest(secondMemberCookie)(base, '/api/session')).status, 401);
@@ -918,6 +932,7 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'workspace.renamed'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.profile_updated'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.password_changed'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'user.session_revoked'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.password_reset'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.opened'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.acknowledged'));

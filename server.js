@@ -25,7 +25,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.35';
+const serviceVersion = '0.4.0-dev.36';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -141,6 +141,18 @@ const githubDeliveryForWorkspace = (item, workspaceId, projects) => {
   return { ...safe, projectIds: (item.projectIds || []).filter(id => projectIds.has(id)), results: (item.results || []).filter(result => projectIds.has(result.projectId)) };
 };
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
+const sessionMetadata = req => ({
+  ip: String(req.socket.remoteAddress || '').slice(0, 100) || null,
+  userAgent: String(req.headers['user-agent'] || '').trim().slice(0, 500) || null
+});
+const publicSession = (item, currentTokenHash) => ({
+  id: item.id,
+  current: item.tokenHash === currentTokenHash,
+  createdAt: item.createdAt,
+  expiresAt: item.expiresAt,
+  ip: item.ip || null,
+  userAgent: item.userAgent || null
+});
 const dossierPayload = (data, run, workspaceId) => {
   const auditEvents = data.auditEvents.filter(item => item.workspaceId === workspaceId);
   return { schema: 'shipwitness.dossier.v2', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id), auditProof: verifyAuditChain(auditEvents) };
@@ -388,7 +400,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const user = { id: createId('usr'), email: normalizedEmail(input.email), name: required(input.name || '管理员', '姓名'), passwordHash, createdAt: now };
           const membership = { id: createId('mem'), workspaceId: workspace.id, userId: user.id, role: 'owner', createdAt: now };
           const token = createSessionToken();
-          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: workspace.id, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now };
+          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: workspace.id, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now, ...sessionMetadata(req) };
           data.workspaces.push(workspace); data.users.push(user); data.memberships.push(membership); data.sessions.push(session);
           for (const collection of ['projects', 'contracts', 'runs', 'issues', 'decisions']) for (const item of data[collection]) item.workspaceId ||= workspace.id;
           appendAudit(data, { workspaceId: workspace.id, actorUserId: user.id, action: 'workspace.initialized', entityType: 'workspace', entityId: workspace.id, details: { migratedCollections: ['projects', 'contracts', 'runs', 'issues', 'decisions'] }, at: now });
@@ -406,7 +418,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const membership = data.memberships.find(item => item.userId === user.id);
         if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
         const token = createSessionToken(); const now = new Date().toISOString();
-        await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now }); appendAudit(current, { workspaceId: membership.workspaceId, actorUserId: user.id, action: 'user.login', entityType: 'user', entityId: user.id, at: now }); });
+        await store.update(current => { current.sessions = current.sessions.filter(item => new Date(item.expiresAt) > new Date()); current.sessions.push({ id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: membership.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now, ...sessionMetadata(req) }); appendAudit(current, { workspaceId: membership.workspaceId, actorUserId: user.id, action: 'user.login', entityType: 'user', entityId: user.id, at: now }); });
         const workspace = data.workspaces.find(item => item.id === membership.workspaceId);
         return json(res, 200, { user: publicUser(user), workspace, role: membership.role }, { 'set-cookie': sessionCookie(token, { secure: secureCookie }) });
       }
@@ -431,7 +443,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           else if (!existingUser || user.id !== existingUser.id) throw Object.assign(new Error('账号状态已变化，请重新打开邀请'), { status: 409 });
           if (data.memberships.some(item => item.workspaceId === current.workspaceId && item.userId === user.id)) throw Object.assign(new Error('账号已经加入该工作区'), { status: 409 });
           const membership = { id: createId('mem'), workspaceId: current.workspaceId, userId: user.id, role: current.role, createdAt: now };
-          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: current.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now };
+          const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: current.workspaceId, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now, ...sessionMetadata(req) };
           current.acceptedAt = now; current.acceptedByUserId = user.id; data.memberships.push(membership); data.sessions.push(session);
           appendAudit(data, { workspaceId: current.workspaceId, actorUserId: user.id, action: 'invitation.accepted', entityType: 'invitation', entityId: current.id, details: { role: current.role, existingAccount: Boolean(existingUser) }, at: now });
           return { user, membership, workspace: data.workspaces.find(item => item.id === current.workspaceId) };
@@ -478,6 +490,24 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'user.password_changed', entityType: 'user', entityId: currentUser.id, at: now });
         });
         return json(res, 200, { ok: true, passwordChangedAt: now, otherSessionsRevoked: true });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/account/sessions') {
+        if (!session) return json(res, 403, { error: 'API Key 不能读取用户会话' });
+        const sessions = authData.sessions.filter(item => item.userId === currentUser.id && new Date(item.expiresAt) > new Date()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        return json(res, 200, sessions.map(item => publicSession(item, cookieTokenHash)));
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'account' && segments[2] === 'sessions' && segments[3] && segments[4] === 'revoke') {
+        if (!session) return json(res, 403, { error: 'API Key 不能撤销用户会话' });
+        if (segments[3] === session.id) return json(res, 409, { error: '当前会话请使用退出登录结束' });
+        const revoked = await store.update(data => {
+          const target = data.sessions.find(item => item.id === segments[3] && item.userId === currentUser.id);
+          if (!target) throw Object.assign(new Error('登录会话不存在或已失效'), { status: 404 });
+          data.sessions = data.sessions.filter(item => item.id !== target.id);
+          const at = new Date().toISOString();
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'user.session_revoked', entityType: 'session', entityId: target.id, details: { createdAt: target.createdAt, ip: target.ip || null }, at });
+          return { id: target.id, revokedAt: at };
+        });
+        return json(res, 200, revoked);
       }
 
       if (currentUser?.mustChangePassword && !['GET', 'HEAD'].includes(req.method) && url.pathname !== '/api/alerts/refresh') return json(res, 428, { error: '管理员已重置密码，请先修改临时密码' });

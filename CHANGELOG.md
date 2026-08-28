@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.36
+
+- Added a self-service login-device list with safe browser/platform summaries, login and expiry times, and current-session identification.
+- Added audited, user-scoped revocation for individual non-current sessions; API keys cannot inspect or revoke interactive sessions.
+- Added account-security UI and regression coverage for cross-session revocation without disrupting the active device.
+
 ## 0.4.0-dev.35
 
 - Added an explicit manager-only reopen workflow for resolved or declined pilot feedback.
