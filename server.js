@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.13';
+const serviceVersion = '0.4.0-dev.14';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -76,6 +76,27 @@ const starterContracts = ({ kitId, startPath, expectedText }) => {
   if (kitId === 'login') return [identity, { code: 'AUTH-01', title: '密码入口可用', description: '登录页必须显示可操作的密码输入框。', category: '安全', severity: 'blocker', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector: 'input[type="password"]' }] }];
   const selector = kitId === 'dashboard' ? 'main' : 'body';
   return [identity, { code: kitId === 'dashboard' ? 'DASH-01' : 'VIEW-01', title: kitId === 'dashboard' ? '工作台主体可见' : '页面主体可见', description: kitId === 'dashboard' ? '页面必须渲染可见的主工作区。' : '页面主体必须完成渲染并可见。', category: '可用性', severity: 'major', steps: [{ action: 'goto', path: startPath }, { action: 'expectVisible', selector }] }];
+};
+
+const buildInbox = (data, workspaceId, userId, role, now = new Date()) => {
+  const projects = new Map(data.projects.filter(item => item.workspaceId === workspaceId).map(item => [item.id, item]));
+  const decisions = new Set(data.decisions.filter(item => item.workspaceId === workspaceId).map(item => item.runId));
+  const items = [];
+  for (const run of data.runs.filter(item => item.workspaceId === workspaceId)) {
+    const project = projects.get(run.projectId); const projectName = project?.name || '未命名项目';
+    if (run.status === 'queued') items.push({ key: `run:${run.id}:queued`, type: 'execution', priority: 'normal', title: '等待执行验收', detail: `${projectName} · ${run.criteria.length} 条标准`, createdAt: run.createdAt, action: { kind: 'run', id: run.id } });
+    if (run.status === 'running' && now - new Date(run.startedAt || run.createdAt) > 15 * 60_000) items.push({ key: `run:${run.id}:stale`, type: 'recovery', priority: 'high', title: '验收任务需要接管', detail: `${projectName} · 执行超过 15 分钟`, createdAt: run.startedAt || run.createdAt, action: { kind: 'run', id: run.id } });
+    if (run.status === 'failed' || run.execution?.verdict === 'failed') items.push({ key: `run:${run.id}:failed`, type: 'failure', priority: 'high', title: '处理失败验收证据', detail: `${projectName} · 查看截图并生成返工单`, createdAt: run.finishedAt || run.execution?.finishedAt || run.createdAt, action: { kind: 'run', id: run.id } });
+    if (run.status === 'completed' && run.execution?.verdict === 'passed' && !decisions.has(run.id) && ['owner', 'approver'].includes(role)) items.push({ key: `run:${run.id}:approval`, type: 'approval', priority: 'high', title: '等待发布审批', detail: `${projectName} · 全部标准已有通过证据`, createdAt: run.execution.finishedAt || run.createdAt, action: { kind: 'run', id: run.id } });
+  }
+  for (const issue of data.issues.filter(item => item.workspaceId === workspaceId && item.status === 'fixed')) {
+    items.push({ key: `issue:${issue.id}:fixed`, type: 'retest', priority: 'high', title: '修复完成，等待复验', detail: issue.title, createdAt: issue.updatedAt || issue.createdAt, action: { kind: 'run', id: issue.runId } });
+  }
+  if (role === 'owner') for (const delivery of data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed')) {
+    items.push({ key: `webhook:${delivery.id}:failed`, type: 'delivery', priority: 'normal', title: '发布通知投递失败', detail: delivery.lastError || 'Webhook 已用尽重试次数', createdAt: delivery.lastAttemptAt || delivery.createdAt, action: { kind: 'automation', id: delivery.id } });
+  }
+  const readKeys = new Set(data.inboxReads.filter(item => item.workspaceId === workspaceId && item.userId === userId).map(item => item.itemKey));
+  return items.map(item => ({ ...item, unread: !readKeys.has(item.key) })).sort((a, b) => Number(b.priority === 'high') - Number(a.priority === 'high') || String(b.createdAt).localeCompare(String(a.createdAt)));
 };
 
 const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt, mustChangePassword: Boolean(user.mustChangePassword) });
@@ -332,6 +353,20 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       const requireRole = roles => {
         if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
       };
+      if (req.method === 'GET' && url.pathname === '/api/inbox') {
+        const items = buildInbox(authData, workspaceId, currentUser.id, membership.role);
+        return json(res, 200, { items, unreadCount: items.filter(item => item.unread).length, total: items.length });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/inbox/read') {
+        const input = await body(req); const currentItems = buildInbox(authData, workspaceId, currentUser.id, membership.role); const validKeys = new Set(currentItems.map(item => item.key));
+        const requested = input.all === true ? [...validKeys] : Array.isArray(input.keys) ? input.keys.slice(0, 200).filter(key => typeof key === 'string' && validKeys.has(key)) : [];
+        await store.update(data => {
+          const existing = new Set(data.inboxReads.filter(item => item.workspaceId === workspaceId && item.userId === currentUser.id).map(item => item.itemKey)); const now = new Date().toISOString();
+          for (const itemKey of requested) if (!existing.has(itemKey)) data.inboxReads.push({ id: createId('ibr'), workspaceId, userId: currentUser.id, itemKey, readAt: now });
+        });
+        const refreshed = buildInbox(await store.read(), workspaceId, currentUser.id, membership.role);
+        return json(res, 200, { read: requested.length, unreadCount: refreshed.filter(item => item.unread).length });
+      }
       if (req.method === 'GET' && url.pathname === '/api/workspaces') {
         const ids = authData.memberships.filter(item => item.userId === currentUser.id).map(item => item.workspaceId);
         return json(res, 200, authData.workspaces.filter(item => ids.includes(item.id)).map(item => ({ ...item, current: item.id === workspaceId })));

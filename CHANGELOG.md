@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.14
+
+- Added a role-aware team inbox for queued runs, stale recovery, failed evidence, release approval, focused retest, and failed Webhook delivery.
+- Added workspace-isolated personal unread state with mark-one and mark-all APIs.
+- Added a persistent top-bar badge, priority ordering, and direct navigation from each inbox item to its handling surface.
+
 ## 0.4.0-dev.13
 
 - Added a first-use wizard with website, dashboard, and login acceptance starter kits.

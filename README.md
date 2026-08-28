@@ -4,10 +4,11 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.13`。已具备首次使用向导与可执行验收启动包、真实浏览器验收、不可覆写的重试与超时恢复、证据返工闭环、安全工作区、一次性成员邀请、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和外部安全审查。
+> 当前版本：`0.4.0-dev.14`。已具备团队待办收件箱、首次使用向导与可执行验收启动包、真实浏览器验收、不可覆写的重试与超时恢复、证据返工闭环、安全工作区、一次性成员邀请、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和外部安全审查。
 
 ## 已实现
 
+- 团队待办收件箱：聚合等待执行、失败处理、超时接管、发布审批、修复复验和失败投递，并保存个人已读状态
 - 首次使用向导：按官网、后台或登录入口启动包一次创建项目、可执行标准和首个验收任务
 - 项目目录、分支、测试网址和返工方式持久化
 - 项目目录、Git 提交和测试网址连通检查
@@ -80,7 +81,7 @@ npm run check
 
 没有配置浏览器步骤的标准只执行基础环境检查；没有明确结果断言的路径仍会标记为“证据不足”。浏览器执行器限制同源跳转、单标准最多 20 步，并且不会执行任意脚本。
 
-路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，首次验收启动包见 [docs/STARTER_KITS.md](docs/STARTER_KITS.md)，任务恢复见 [docs/RUN_RECOVERY.md](docs/RUN_RECOVERY.md)，成员邀请见 [docs/INVITATIONS.md](docs/INVITATIONS.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
+路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，团队待办见 [docs/TEAM_INBOX.md](docs/TEAM_INBOX.md)，首次验收启动包见 [docs/STARTER_KITS.md](docs/STARTER_KITS.md)，任务恢复见 [docs/RUN_RECOVERY.md](docs/RUN_RECOVERY.md)，成员邀请见 [docs/INVITATIONS.md](docs/INVITATIONS.md)，工作区管理见 [docs/ADMINISTRATION.md](docs/ADMINISTRATION.md)，数据治理见 [docs/DATA_RETENTION.md](docs/DATA_RETENTION.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，兼容性承诺见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)，内部安全审查见 [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

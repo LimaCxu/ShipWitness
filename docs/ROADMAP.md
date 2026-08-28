@@ -22,6 +22,7 @@
 - [x] Versioned coding-agent handoff package and GitHub Issue adapter
 - [x] PostgreSQL storage, versioned migrations, JSON import, and health checks
 - [x] First-use wizard with executable acceptance starter kits and immediate evidence capture
+- [x] Role-aware team inbox with personal unread state and direct task handling
 
 ## 1.0 — Self-hosted release gate
 

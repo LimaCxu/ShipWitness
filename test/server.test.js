@@ -186,6 +186,27 @@ test('starter kit creates a project, executable contracts and first run atomical
   assert.ok(audit.body.some(item => item.action === 'starter_kit.applied' && item.entityId === applied.body.project.id));
 });
 
+test('team inbox derives actionable work and keeps personal read state', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-inbox-'));
+  const server = createApp({ storeFile: join(folder, 'store.json'), artifactsDir: join(folder, 'evidence') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const applied = await authRequest(base, '/api/starter-kits/apply', { method: 'POST', body: JSON.stringify({ kitId: 'website', name: '待办验收', repo: folder, url: base, startPath: '/', expectedText: 'ShipWitness' }) });
+
+  const queued = await authRequest(base, '/api/inbox');
+  assert.equal(queued.body.unreadCount, 1);
+  assert.equal(queued.body.items[0].key, `run:${applied.body.run.id}:queued`);
+  assert.equal((await authRequest(base, '/api/inbox/read', { method: 'POST', body: JSON.stringify({ keys: [queued.body.items[0].key, 'invalid:key'] }) })).body.unreadCount, 0);
+  assert.equal((await authRequest(base, '/api/inbox')).body.items[0].unread, false);
+
+  await authRequest(base, `/api/runs/${applied.body.run.id}/execute`, { method: 'POST' });
+  const approval = await authRequest(base, '/api/inbox');
+  assert.equal(approval.body.unreadCount, 1);
+  assert.equal(approval.body.items[0].type, 'approval');
+  assert.equal((await authRequest(base, '/api/inbox/read', { method: 'POST', body: JSON.stringify({ all: true }) })).body.unreadCount, 0);
+});
+
 test('run execution is claimed atomically and rejects a concurrent duplicate', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-concurrency-'));
   let releaseExecution; const blocked = new Promise(resolve => { releaseExecution = resolve; });
