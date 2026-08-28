@@ -10,6 +10,14 @@ Use PostgreSQL mode for durable deployments. JSON mode remains available for loc
 4. Open `http://<host>:4173` and create the first owner account.
 5. Put ShipWitness behind an HTTPS reverse proxy before allowing network access. Preserve `X-Forwarded-Proto: https` so session cookies receive the `Secure` flag.
 
+6. List every non-loopback application or asset origin that browser acceptance is allowed to contact:
+
+```bash
+SHIPWITNESS_ALLOWED_TARGET_ORIGINS='https://staging.example.com,https://assets.example.com'
+```
+
+The list uses exact origins, including scheme and non-default port. Do not add broad internal gateways or metadata endpoints. Loopback URLs are enabled automatically for local evaluation.
+
 `GET /api/health` returns the active storage engine and database readiness. The application container waits for PostgreSQL health before starting, and pending numbered SQL migrations run automatically under an advisory lock.
 
 The master key is not stored in PostgreSQL backups. Back it up separately and restrict access to the application process. Test restoration with the same key by verifying one existing signed dossier and delivering a test webhook.

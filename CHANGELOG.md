@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.7
+
+- Added explicit acceptance-target origin policy, redirect validation, and browser outbound-request blocking.
+- Added atomic run claiming and stale Webhook delivery recovery.
+- Added password/input bounds, stronger browser security headers, dependency vulnerability CI gates, and security regression tests.
+- Published the pre-1.0 compatibility contract and internal threat-model review.
+
 ## 0.4.0-dev.6
 
 - Added transactional re-encryption of signing and webhook secrets with mandatory verified backup and audit records.

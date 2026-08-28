@@ -12,6 +12,7 @@ import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
 import { evaluateReleaseGate } from './lib/release-gate.js';
 import { createSigningKey, decryptSecret, encryptSecret, signPayload, verifySignedPayload } from './lib/signing.js';
 import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
+import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-policy.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 
@@ -20,12 +21,16 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.6';
+const serviceVersion = '0.4.0-dev.7';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
-  'x-frame-options': 'DENY'
+  'x-frame-options': 'DENY',
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-resource-policy': 'same-origin'
 };
 
 const json = (res, status, body, headers = {}) => {
@@ -46,13 +51,14 @@ const body = async req => {
   catch { throw Object.assign(new Error('JSON 格式无效'), { status: 400 }); }
 };
 
-const required = (value, field) => {
+const required = (value, field, maxLength = 5000) => {
   if (typeof value !== 'string' || !value.trim()) throw Object.assign(new Error(`${field}不能为空`), { status: 400 });
+  if (value.trim().length > maxLength) throw Object.assign(new Error(`${field}长度不能超过 ${maxLength} 个字符`), { status: 400 });
   return value.trim();
 };
 
 const normalizedEmail = value => {
-  const email = required(value, '邮箱').toLowerCase();
+  const email = required(value, '邮箱', 254).toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('邮箱格式无效'), { status: 400 });
   return email;
 };
@@ -75,19 +81,17 @@ async function checkRepository(repoPath) {
   } catch { return { status: 'failed', detail: '目录不存在或无权读取' }; }
 }
 
-async function checkUrl(url) {
+async function checkUrl(url, allowedOrigins) {
   try {
-    const parsed = new URL(url);
-    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
-    const response = await fetch(parsed, { signal: AbortSignal.timeout(3500), redirect: 'manual' });
+    const response = await fetchTarget(url, { allowedOrigins, timeoutMs: 3500 });
     return response.status < 500 ? { status: 'ready', detail: `HTTP ${response.status}` } : { status: 'failed', detail: `HTTP ${response.status}` };
   } catch { return { status: 'failed', detail: '网址当前无法访问' }; }
 }
 
-async function inspectTarget(url) {
+async function inspectTarget(url, allowedOrigins) {
   const started = Date.now();
   try {
-    const response = await fetch(new URL(url), { signal: AbortSignal.timeout(5000), redirect: 'follow' });
+    const response = await fetchTarget(url, { allowedOrigins, timeoutMs: 5000 });
     const contentType = response.headers.get('content-type') || 'unknown';
     const text = (await response.text()).slice(0, 250_000);
     const title = text.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || null;
@@ -97,8 +101,8 @@ async function inspectTarget(url) {
   }
 }
 
-async function executeRun(project, run) {
-  const [repository, target] = await Promise.all([checkRepository(project.repo), inspectTarget(project.url)]);
+async function executeRun(project, run, allowedOrigins) {
+  const [repository, target] = await Promise.all([checkRepository(project.repo), inspectTarget(project.url, allowedOrigins)]);
   const canContinue = repository.status !== 'failed' && target.status === 'ready';
   return {
     executor: 'shipwitness-basic-v1',
@@ -116,17 +120,18 @@ async function executeRun(project, run) {
   };
 }
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000 } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
   const processWebhookDeliveries = async () => {
     const snapshot = await store.read(); const now = new Date();
-    const due = snapshot.webhookDeliveries.filter(item => ['queued', 'retrying'].includes(item.status) && new Date(item.nextAttemptAt) <= now).slice(0, 10);
+    const due = snapshot.webhookDeliveries.filter(item => (['queued', 'retrying'].includes(item.status) && new Date(item.nextAttemptAt) <= now) || (item.status === 'sending' && new Date(item.lastAttemptAt || 0) <= new Date(now.getTime() - 5 * 60_000))).slice(0, 10);
     for (const candidate of due) {
       const claimed = await store.update(data => {
         const delivery = data.webhookDeliveries.find(item => item.id === candidate.id);
-        if (!delivery || !['queued', 'retrying'].includes(delivery.status) || new Date(delivery.nextAttemptAt) > new Date()) return null;
+        const staleSending = delivery?.status === 'sending' && new Date(delivery.lastAttemptAt || 0) <= new Date(Date.now() - 5 * 60_000);
+        if (!delivery || (!['queued', 'retrying'].includes(delivery.status) && !staleSending) || (!staleSending && new Date(delivery.nextAttemptAt) > new Date())) return null;
         const webhook = data.webhooks.find(item => item.id === delivery.webhookId && item.enabled);
         if (!webhook) { delivery.status = 'cancelled'; return null; }
         delivery.status = 'sending'; delivery.attempts += 1; delivery.lastAttemptAt = new Date().toISOString(); return { delivery: { ...delivery }, webhook: { ...webhook } };
@@ -330,11 +335,11 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
-        const input = await body(req);
+        const input = await body(req); const repoPath = required(input.repo, '项目目录', 4096); const targetUrl = validateTargetUrl(required(input.url, '测试网址', 2048), allowedTargetOrigins).href;
         const project = await store.update(data => {
           const now = new Date().toISOString();
           const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
-          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: required(input.repo, '项目目录'), url: required(input.url, '测试网址'), branch: required(input.branch || 'main', '代码分支'), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
+          const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: existing ? 'project.updated' : 'project.created', entityType: 'project', entityId: value.id, details: { branch: value.branch, handoffMode: value.handoffMode }, at: now });
           return value;
@@ -345,7 +350,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const data = await store.read();
         const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!project) return json(res, 404, { error: '项目不存在' });
-        const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url), checkBrowserAvailability()]);
+        const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url, allowedTargetOrigins), checkBrowserAvailability()]);
         const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
         return json(res, 200, { projectId: project.id, checkedAt: new Date().toISOString(), checks });
       }
@@ -410,13 +415,13 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const snapshot = await store.read();
         const run = snapshot.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
-        if (run.status === 'running') return json(res, 409, { error: '任务正在执行' });
         const project = snapshot.projects.find(item => item.id === run.projectId && item.workspaceId === workspaceId);
         if (!project) return json(res, 409, { error: '任务关联的项目不存在' });
-        await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'running'; current.startedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.started', entityType: 'run', entityId: current.id, at: current.startedAt }); });
+        validateTargetUrl(project.url, allowedTargetOrigins);
+        await store.update(data => { const current = data.runs.find(item => item.id === run.id); const stale = current.status === 'running' && new Date(current.startedAt || 0) <= new Date(Date.now() - 15 * 60_000); if (current.status === 'running' && !stale) throw Object.assign(new Error('任务正在执行'), { status: 409 }); current.status = 'running'; current.startedAt = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: stale ? 'run.recovered' : 'run.started', entityType: 'run', entityId: current.id, at: current.startedAt }); });
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
-          const execution = hasBrowserSteps ? await executeBrowserRun({ project, run, artifactsDir }) : await executeRun(project, run);
+          const execution = hasBrowserSteps ? await browserRunExecutor({ project, run, artifactsDir, allowedOrigins: allowedTargetOrigins }) : await basicRunExecutor(project, run, allowedTargetOrigins);
           const completed = await store.update(data => {
             const current = data.runs.find(item => item.id === run.id);
             current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString();
@@ -602,7 +607,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         if (!file.startsWith(`${evidenceRoot}/`) || extname(file) !== '.png') return json(res, 403, { error: '禁止访问' });
         try {
           const content = await readFile(file);
-          res.writeHead(200, { ...securityHeaders, 'content-type': 'image/png', 'cache-control': 'private, max-age=3600' });
+          res.writeHead(200, { ...securityHeaders, 'content-type': 'image/png', 'cache-control': 'no-store' });
           return res.end(content);
         } catch { return json(res, 404, { error: '证据文件不存在' }); }
       }

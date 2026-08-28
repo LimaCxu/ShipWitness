@@ -4,6 +4,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server.js';
+import { encryptSecret } from '../lib/signing.js';
+import { JsonStore } from '../lib/store.js';
 
 const signingSecret = Buffer.alloc(32, 7).toString('base64');
 
@@ -31,6 +33,8 @@ test('project, preflight, run and dossier API work together', async t => {
   const health = await request(base, '/api/health');
   assert.equal(health.status, 200);
   assert.equal(health.body.ok, true);
+  assert.equal(health.headers.get('x-frame-options'), 'DENY');
+  assert.match(health.headers.get('permissions-policy'), /camera=\(\)/);
 
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);
@@ -143,6 +147,46 @@ test('invalid payloads return a useful 400 response', async t => {
   const result = await authenticatedRequest(cookie)(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '缺少路径' }) });
   assert.equal(result.status, 400);
   assert.equal(result.body.error, '项目目录不能为空');
+  const externalTarget = await authenticatedRequest(cookie)(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '禁止的外部目标', repo: folder, url: 'https://unapproved.example.test', branch: 'main' }) });
+  assert.equal(externalTarget.status, 400);
+  assert.match(externalTarget.body.error, /未获管理员允许/);
+  const longPassword = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'owner@example.com', password: 'x'.repeat(129) }) });
+  assert.equal(longPassword.status, 400);
+  assert.match(longPassword.body.error, /128/);
+});
+
+test('run execution is claimed atomically and rejects a concurrent duplicate', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-concurrency-'));
+  let releaseExecution; const blocked = new Promise(resolve => { releaseExecution = resolve; });
+  const browserRunExecutor = async () => { await blocked; return { executor: 'test-browser', verdict: 'passed', summary: 'done', criteriaResults: [{ title: '并发', result: 'passed' }] }; };
+  const server = createApp({ storeFile: join(folder, 'store.json'), browserRunExecutor });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const project = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '并发项目', repo: folder, url: base, branch: 'main' }) });
+  const contract = await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, code: 'CON-01', title: '并发', description: '只执行一次', steps: [{ action: 'expectText', selector: 'body', value: 'ShipWitness' }] }) });
+  assert.equal(contract.status, 201);
+  const run = await authRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '并发只能执行一次' }) });
+  const first = authRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const second = await authRequest(base, `/api/runs/${run.body.id}/execute`, { method: 'POST' });
+  assert.equal(second.status, 409);
+  releaseExecution();
+  assert.equal((await first).status, 200);
+});
+
+test('stale sending webhook delivery is reclaimed after an interrupted worker', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-webhook-lease-')); const store = new JsonStore(join(folder, 'store.json'));
+  await store.update(data => {
+    data.webhooks.push({ id: 'wh_stale', workspaceId: 'ws_stale', enabled: true, url: 'https://hooks.example.test/release', encryptedSecret: encryptSecret('whsec_test', signingSecret) });
+    data.webhookDeliveries.push({ id: 'delivery_stale', workspaceId: 'ws_stale', webhookId: 'wh_stale', event: 'release.decision', payload: { verdict: 'approve' }, status: 'sending', attempts: 1, lastAttemptAt: new Date(Date.now() - 10 * 60_000).toISOString(), nextAttemptAt: new Date(Date.now() - 10 * 60_000).toISOString(), createdAt: new Date().toISOString() });
+  });
+  const server = createApp({ store, signingSecret, webhookSender: async () => ({ status: 204 }) });
+  t.after(() => server.closeStore());
+  assert.equal(await server.processWebhookDeliveries(), 1);
+  const delivery = (await store.read()).webhookDeliveries[0];
+  assert.equal(delivery.status, 'delivered');
+  assert.equal(delivery.attempts, 2);
 });
 
 test('authentication, roles and workspace isolation prevent cross-tenant access', async t => {
@@ -257,5 +301,6 @@ test('browser executor performs a real assertion and records screenshot evidence
   const screenshot = await fetch(`${base}${execution.body.execution.criteriaResults[0].screenshotUrl}`, { headers: { cookie } });
   assert.equal(screenshot.status, 200);
   assert.equal(screenshot.headers.get('content-type'), 'image/png');
+  assert.equal(screenshot.headers.get('cache-control'), 'no-store');
   assert.ok((await screenshot.arrayBuffer()).byteLength > 1_000);
 });

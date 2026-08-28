@@ -31,7 +31,9 @@
 - [x] Upgrade preflight for backup freshness, key validity, and schema compatibility
 - [x] Transactional master-key rotation with audit events
 - [x] Exact-version Compose rollback orchestration with health confirmation
-- End-to-end external security review and supported 1.0 compatibility contract
+- [x] Internal threat-model review and pre-1.0 compatibility contract
+- Independent penetration test and published remediation evidence
+- Supported 1.0 lifecycle and end-of-support policy
 - [x] Backup manifest, integrity verification, and restore drill tooling
 - Stable extension API for coding-agent handoff
 - End-to-end security review and deployment guide

@@ -34,5 +34,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install --ignore-scripts
+      - run: npm run security:audit
       - run: npx playwright install --with-deps chromium
       - run: npm run check
