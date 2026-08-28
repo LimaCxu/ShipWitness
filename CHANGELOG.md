@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.40
+
+- Replaced the one-screen bootstrap form with a two-step deployment preflight and first-administrator wizard.
+- Added a public, secret-free setup status endpoint covering storage, master key, public HTTPS URL, and SMTP readiness.
+- Recorded the immutable initialization environment summary in the workspace and audit chain for later delivery review.
+- Clearly labels controlled-pilot deployments versus public candidates without claiming production readiness.
+
 ## 0.4.0-dev.39
 
 - Added workspace-level member suspension and restoration without deleting historical evidence.

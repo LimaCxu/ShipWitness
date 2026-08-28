@@ -26,7 +26,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.39';
+const serviceVersion = '0.4.0-dev.40';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -273,6 +273,18 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
   const resolvedEmailSender = emailSender === undefined ? createSmtpSender(emailConfiguration) : emailSender;
   const emailEnabled = typeof resolvedEmailSender === 'function';
   if (emailEnabled && !signingSecret) throw new Error('启用邮件通知时必须配置 SHIPWITNESS_MASTER_KEY');
+  const setupStatus = async () => {
+    const data = await store.read(); const storage = await store.health(); let masterKeyConfigured = false;
+    try { keyFromSecret(signingSecret); masterKeyConfigured = true; } catch {}
+    const publicUrlConfigured = Boolean(publicUrl); const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
+    const checks = [
+      { id: 'storage', label: '数据存储', status: storage.status === 'ready' ? 'pass' : 'block', detail: storage.engine || '存储不可用' },
+      { id: 'master_key', label: '主密钥', status: masterKeyConfigured ? 'pass' : 'warning', detail: masterKeyConfigured ? '已配置持久化加密密钥' : '未配置持久化主密钥，不能启用签名与敏感集成' },
+      { id: 'public_url', label: '公开地址', status: publicHttps ? 'pass' : publicUrlConfigured ? 'warning' : 'warning', detail: publicHttps ? '已配置 HTTPS 公开地址' : publicUrlConfigured ? '公开地址不是 HTTPS，仅适合本地或受控网络' : '未配置公开地址，邀请与找回链接需手动处理' },
+      { id: 'email', label: '邮件服务', status: emailEnabled ? 'pass' : 'warning', detail: emailEnabled ? 'SMTP 已配置' : 'SMTP 未配置，通知不会主动发送' }
+    ];
+    return { needsSetup: !data.users.length, version, deploymentMode: publicHttps ? 'public_candidate' : 'controlled_pilot', storage: { status: storage.status, engine: storage.engine || 'unknown' }, masterKeyConfigured, publicUrlConfigured, publicHttps, emailEnabled, checks };
+  };
   const queueEmail = (data, { workspaceId, to, kind, subject, text, html, entityId }) => {
     if (!emailEnabled) return null;
     const now = new Date().toISOString(); const item = { id: createId('eml'), workspaceId, to, kind, encryptedMessage: encryptSecret(JSON.stringify({ to, subject, text, html }), signingSecret), entityId, status: 'queued', attempts: 0, nextAttemptAt: now, createdAt: now };
@@ -365,8 +377,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         resources: ['/api/v1/projects', '/api/v1/runs', '/api/v1/runs/:id', '/api/v1/runs/:id/execute', '/api/v1/runs/:id/retry', '/api/v1/dossiers/:runId', '/api/v1/gates/:runId']
       });
       if (req.method === 'GET' && url.pathname === '/api/setup/status') {
-        const data = await store.read();
-        return json(res, 200, { needsSetup: !data.users.length });
+        return json(res, 200, await setupStatus());
       }
       if (req.method === 'POST' && url.pathname === '/api/password-reset/request') {
         const input = await body(req); const email = normalizedEmail(input.email); const generic = { accepted: true, message: '如果该邮箱存在且邮件服务可用，重置链接会在几分钟内发送。' };
@@ -424,18 +435,18 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'POST' && url.pathname === '/api/setup') {
         const input = await body(req);
-        const passwordHash = await hashPassword(input.password);
+        const passwordHash = await hashPassword(input.password); const deployment = await setupStatus();
         const created = await store.update(data => {
           if (data.users.length) throw Object.assign(new Error('系统已经完成初始化'), { status: 409 });
           const now = new Date().toISOString();
-          const workspace = { id: createId('ws'), name: required(input.workspaceName || '默认工作区', '工作区名称'), createdAt: now };
+          const workspace = { id: createId('ws'), name: required(input.workspaceName || '默认工作区', '工作区名称'), createdAt: now, initialization: { completedAt: now, version, deploymentMode: deployment.deploymentMode, storageEngine: deployment.storage.engine, masterKeyConfigured: deployment.masterKeyConfigured, publicUrlConfigured: deployment.publicUrlConfigured, publicHttps: deployment.publicHttps, emailEnabled: deployment.emailEnabled } };
           const user = { id: createId('usr'), email: normalizedEmail(input.email), name: required(input.name || '管理员', '姓名'), passwordHash, createdAt: now };
           const membership = { id: createId('mem'), workspaceId: workspace.id, userId: user.id, role: 'owner', createdAt: now };
           const token = createSessionToken();
           const session = { id: createId('ses'), tokenHash: sessionTokenHash(token), userId: user.id, workspaceId: workspace.id, expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), createdAt: now, ...sessionMetadata(req) };
           data.workspaces.push(workspace); data.users.push(user); data.memberships.push(membership); data.sessions.push(session);
           for (const collection of ['projects', 'contracts', 'runs', 'issues', 'decisions']) for (const item of data[collection]) item.workspaceId ||= workspace.id;
-          appendAudit(data, { workspaceId: workspace.id, actorUserId: user.id, action: 'workspace.initialized', entityType: 'workspace', entityId: workspace.id, details: { migratedCollections: ['projects', 'contracts', 'runs', 'issues', 'decisions'] }, at: now });
+          appendAudit(data, { workspaceId: workspace.id, actorUserId: user.id, action: 'workspace.initialized', entityType: 'workspace', entityId: workspace.id, details: { migratedCollections: ['projects', 'contracts', 'runs', 'issues', 'decisions'], deploymentMode: deployment.deploymentMode, storageEngine: deployment.storage.engine, masterKeyConfigured: deployment.masterKeyConfigured, publicUrlConfigured: deployment.publicUrlConfigured, publicHttps: deployment.publicHttps, emailEnabled: deployment.emailEnabled }, at: now });
           return { user, workspace, membership, token };
         });
         return json(res, 201, { user: publicUser(created.user), workspace: created.workspace, role: created.membership.role }, { 'set-cookie': sessionCookie(created.token, { secure: secureCookie }) });

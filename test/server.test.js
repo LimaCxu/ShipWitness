@@ -49,6 +49,10 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.equal(health.body.ok, true);
   assert.equal(health.headers.get('x-frame-options'), 'DENY');
   assert.match(health.headers.get('permissions-policy'), /camera=\(\)/);
+  const setupStatus = await request(base, '/api/setup/status');
+  assert.equal(setupStatus.status, 200); assert.equal(setupStatus.body.needsSetup, true); assert.equal(setupStatus.body.deploymentMode, 'controlled_pilot');
+  assert.deepEqual(setupStatus.body.checks.map(item => item.id), ['storage', 'master_key', 'public_url', 'email']);
+  assert.equal(setupStatus.body.checks.some(item => Object.hasOwn(item, 'secret')), false);
   const frontendScript = await fetch(`${base}/api.js`);
   assert.equal(frontendScript.status, 200);
   assert.equal(frontendScript.headers.get('cache-control'), 'no-cache');
@@ -67,6 +71,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /api\/login\/mfa/);
   assert.match(frontendScriptText, /forgotPassword/);
   assert.match(frontendScriptText, /password-reset\/request/);
+  assert.match(frontendScriptText, /setupCheckList/);
+  assert.match(frontendScriptText, /继续创建管理员/);
   assert.match(frontendScriptText, /shipwitness\.pilot-feedback\.v1|ShipWitness-feedback/);
   assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.match(frontendScriptText, /actionConfirmDialog/);
@@ -80,6 +86,10 @@ test('project, preflight, run and dossier API work together', async t => {
 
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);
+  const initializedSession = await authRequest(base, '/api/session');
+  assert.equal(initializedSession.body.workspace.initialization.deploymentMode, 'controlled_pilot');
+  assert.equal(initializedSession.body.workspace.initialization.storageEngine, 'json-file');
+  assert.equal((await request(base, '/api/setup/status')).body.needsSetup, false);
 
   const created = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '测试项目', repo: folder, url: `${base}/`, branch: 'main', handoffMode: 'github', githubRepo: 'example/shipwitness-test' }) });
   assert.equal(created.status, 201);
@@ -463,7 +473,9 @@ test('email queue encrypts invitation links and delivers invitation and approval
   const server = createApp({ storeFile, signingSecret, publicUrl: 'https://shipwitness.example', emailRetryBaseMs: 0, emailSender: async message => { if (failEmail) throw new Error('测试 SMTP 不可用'); sent.push(message); return { messageId: `message-${sent.length}` }; }, emailConfiguration: { enabled: true }, artifactsDir: join(folder, 'evidence') });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { server.close(); await server.closeStore(); });
-  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const deploymentStatus = await request(base, '/api/setup/status'); assert.equal(deploymentStatus.body.deploymentMode, 'public_candidate'); assert.equal(deploymentStatus.body.emailEnabled, true); assert.equal(deploymentStatus.body.publicHttps, true); assert.equal(deploymentStatus.body.masterKeyConfigured, true);
+  const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
 
   const invitation = await authRequest(base, '/api/invitations', { method: 'POST', body: JSON.stringify({ email: 'mail-invite@example.com', role: 'member' }) });
   assert.equal(invitation.body.emailQueued, true);
