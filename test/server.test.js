@@ -51,7 +51,14 @@ test('project, preflight, run and dossier API work together', async t => {
   const frontendScript = await fetch(`${base}/api.js`);
   assert.equal(frontendScript.status, 200);
   assert.equal(frontendScript.headers.get('cache-control'), 'no-cache');
-  assert.match(await frontendScript.text(), /创建新任务并重试/);
+  const frontendScriptText = await frontendScript.text();
+  assert.match(frontendScriptText, /创建新任务并重试/);
+  assert.match(frontendScriptText, /runProject\.value = backendProject\.name/);
+  const frontendShell = await fetch(`${base}/`); const frontendShellText = await frontendShell.text();
+  assert.match(frontendShellText, /<body class="auth-pending">/);
+  assert.doesNotMatch(frontendShellText, /你的产品决定 · DEL-01/);
+  const legacyScript = await fetch(`${base}/app.js`); const legacyScriptText = await legacyScript.text();
+  assert.doesNotMatch(legacyScriptText, /浏览器自动执行器正在开发中|shipwitness\.prototype\.connection|模拟执行中/);
 
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);

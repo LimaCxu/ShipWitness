@@ -50,7 +50,7 @@ let currentSession = null;
 let invitationToken = null;
 let invitationDetails = null;
 const showAuth = mode => {
-  authMode = mode; authGate.hidden = false; document.body.classList.add('auth-locked');
+  authMode = mode; bootGate.hidden = true; authGate.hidden = false; document.body.classList.remove('auth-pending'); document.body.classList.add('auth-locked');
   const setup = mode === 'setup'; workspaceField.hidden = !setup; nameField.hidden = !setup; emailField.hidden = false; authEmail.required = true; authName.required = setup;
   authTitle.textContent = setup ? '创建第一个安全工作区' : '登录 ShipWitness';
   authEyebrow.textContent = setup ? '首次初始化' : '安全工作区';
@@ -66,7 +66,7 @@ const showInvitation = (details, token) => {
   authDescription.textContent = details.existingAccount ? `邀请发送给 ${details.maskedEmail}。请输入现有账号密码确认身份。` : `邀请发送给 ${details.maskedEmail}。请设置姓名和自己的登录密码。`;
   authSubmit.textContent = '接受邀请并进入'; authPassword.autocomplete = details.existingAccount ? 'current-password' : 'new-password'; authPassword.value = '';
 };
-const hideAuth = session => { currentSession = session; authGate.hidden = true; document.body.classList.remove('auth-locked'); accountBtn.textContent = `${session.workspace.name} · ${session.user.name}`; };
+const hideAuth = session => { currentSession = session; bootGate.hidden = true; authGate.hidden = true; document.body.classList.remove('auth-pending', 'auth-locked'); accountBtn.textContent = `${session.workspace.name} · ${session.user.name}`; };
 
 const renderProjectMenu = () => {
   projectSwitchBtn.querySelector('b').textContent = backendProject?.name || '尚未接入';
@@ -338,7 +338,7 @@ function renderLiveDashboard(project, run) {
   else if (overall === 'failed') nextAction.innerHTML = '<span class="mini-label">现在需要处理</span><h3>查看失败路径</h3><p>先核对截图和步骤，再生成返工单。</p><button class="decide" id="viewQueueBtn">查看任务证据 <span>→</span></button>';
   else if (run.status === 'queued') nextAction.innerHTML = '<span class="mini-label">任务已经就绪</span><h3>执行真实浏览器验收</h3><p>执行后保存步骤、网络响应和截图证据。</p><button class="decide" id="viewQueueBtn">打开任务并执行 <span>→</span></button>';
   else nextAction.innerHTML = '<span class="mini-label">证据仍不完整</span><h3>补齐浏览器步骤</h3><p>未配置步骤的标准不会被判定通过。</p><button class="decide" id="dashboardContracts">打开标准库 <span>→</span></button>';
-  document.querySelector('#dashboardContracts')?.addEventListener('click', () => contractsBtn.click()); document.querySelector('#dashboardExport')?.addEventListener('click', () => downloadDossier.click()); document.querySelector('#dashboardSign')?.addEventListener('click', async () => { try { const signedDocument = await api(`/api/dossiers/${run.id}/sign`, { method: 'POST' }); const blob = new Blob([JSON.stringify(signedDocument, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `ShipWitness-signed-${run.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 500); toast('签名卷宗已生成，可用 CLI 离线验签'); } catch (error) { toast(error.message); } });
+  document.querySelector('#dashboardContracts')?.addEventListener('click', () => contractsBtn.click()); document.querySelector('#dashboardExport')?.addEventListener('click', () => downloadRunDossier()); document.querySelector('#dashboardSign')?.addEventListener('click', async () => { try { const signedDocument = await api(`/api/dossiers/${run.id}/sign`, { method: 'POST' }); const blob = new Blob([JSON.stringify(signedDocument, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `ShipWitness-signed-${run.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 500); toast('签名卷宗已生成，可用 CLI 离线验签'); } catch (error) { toast(error.message); } });
 }
 
 let starterKitsCache = [];
@@ -484,6 +484,17 @@ window.shipwitnessCreateRun = async () => {
     backendRunId = run.id;
   renderLiveDashboard(backendProject, run);
   return run;
+};
+
+newRunBtn.onclick = () => {
+  if (!backendProjectId || !backendProject) return openStarter().catch(error => toast(error.message));
+  runProject.value = backendProject.name;
+  runUrl.value = backendProject.url;
+  runRepo.value = backendProject.repo;
+  runRequirement.value = '';
+  showRunStep(1);
+  runDialog.showModal();
+  runRequirement.focus();
 };
 
 const toggleContracts = open => { contractsPanel.classList.toggle('open', open); contractsPanel.setAttribute('aria-hidden', String(!open)); contractsMask.hidden = !open; };
@@ -726,20 +737,7 @@ exportGithub.onclick = async () => {
   catch (error) { toast(error.message); } finally { exportGithub.disabled = false; }
 };
 
-signDecision.onclick = async () => {
-  if (!backendRunId) return toast('请先创建验收任务');
-  const owner = ownerName.value.trim();
-  try {
-    await api('/api/decisions', { method: 'POST', body: JSON.stringify({ runId: backendRunId, owner, verdict: 'hold', note: '存在阻断问题，暂不发布' }) });
-    paperSign.textContent = `${owner} · 已确认暂不发布 · 后端已记录`;
-    paperSign.classList.add('signed');
-    signDecision.textContent = '决定已写入后端';
-    signDecision.disabled = true;
-    toast('暂不发布决定已保存到后端');
-  } catch (error) { toast(error.message); }
-};
-
-downloadDossier.onclick = async () => {
+async function downloadRunDossier() {
   if (!backendRunId) return toast('请先创建验收任务');
   try {
     const data = await api(`/api/dossiers/${backendRunId}`);
@@ -752,5 +750,5 @@ downloadDossier.onclick = async () => {
     setTimeout(() => URL.revokeObjectURL(url), 500);
     toast('后端验收卷宗已生成');
   } catch (error) { toast(error.message); }
-};
-exportBtn.onclick = () => downloadDossier.click();
+}
+exportBtn.onclick = () => downloadRunDossier();

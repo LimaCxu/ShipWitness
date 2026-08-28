@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.27
+
+- Replaced the prototype-style new-run form with a current-project snapshot, a required release objective, and selection of persisted acceptance standards.
+- Removed simulated execution, hard-coded dossier, sample customer, and browser-not-ready states from the production frontend path.
+- Added an authentication boot state so signed-out users never see stale project or preflight content before session resolution.
+
 ## 0.4.0-dev.26
 
 - Added immutable Ed25519-signed security-review remediation dossiers with workspace, review, finding, retest, and risk-acceptance snapshots.
