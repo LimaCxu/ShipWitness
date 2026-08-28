@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.39
+
+- Added workspace-level member suspension and restoration without deleting historical evidence.
+- Added owner-controlled forced sign-out and MFA recovery for eligible single-workspace accounts.
+- Suspension now revokes workspace sessions and API keys, blocks new login, and records auditable lifecycle events.
+- Expanded member management with account state, online-device count, MFA state, and guarded security actions.
+
 ## 0.4.0-dev.38
 
 - Added non-enumerating email password-reset requests with throttled, single-use, 30-minute tokens and encrypted delivery payloads.

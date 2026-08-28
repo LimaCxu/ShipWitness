@@ -26,7 +26,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.38';
+const serviceVersion = '0.4.0-dev.39';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -447,7 +447,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const user = data.users.find(item => item.email === email);
         if (!user || !await verifyPassword(input.password, user.passwordHash)) { loginAttempts.set(attemptKey, { count: (attempt?.count || 0) + 1, startedAt: attempt?.startedAt || nowMs }); return json(res, 401, { error: '邮箱或密码错误' }); }
         loginAttempts.delete(attemptKey);
-        const membership = data.memberships.find(item => item.userId === user.id);
+        const membership = data.memberships.find(item => item.userId === user.id && !item.disabledAt);
         if (!membership) return json(res, 403, { error: '账号尚未加入工作区' });
         if (user.mfaSecretEncrypted) {
           const challengeToken = createSessionToken(); const now = new Date();
@@ -468,7 +468,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.mfaChallenges = data.mfaChallenges.filter(item => new Date(item.expiresAt) > now);
           const challenge = data.mfaChallenges.find(item => item.tokenHash === challengeHash);
           if (!challenge || challenge.attempts >= 5) return { error: '两步验证已失效，请重新登录', status: 401 };
-          const user = data.users.find(item => item.id === challenge.userId); let membership = data.memberships.find(item => item.userId === challenge.userId && item.workspaceId === challenge.workspaceId); let invitation = null;
+          const user = data.users.find(item => item.id === challenge.userId); let membership = data.memberships.find(item => item.userId === challenge.userId && item.workspaceId === challenge.workspaceId && !item.disabledAt); let invitation = null;
           if (challenge.purpose === 'invitation') { invitation = data.invitations.find(item => item.id === challenge.invitationId && item.workspaceId === challenge.workspaceId && !item.revokedAt && !item.acceptedAt && new Date(item.expiresAt) > now); if (!invitation || membership) { data.mfaChallenges = data.mfaChallenges.filter(item => item.id !== challenge.id); return { error: membership ? '账号已经加入该工作区' : '邀请链接无效或已过期', status: membership ? 409 : 410 }; } }
           if (!user?.mfaSecretEncrypted || (!membership && !invitation)) { data.mfaChallenges = data.mfaChallenges.filter(item => item.id !== challenge.id); return { error: '两步验证状态已变化，请重新登录', status: 409 }; }
           const verification = consumeMfaCode(user, code, decryptSecret(user.mfaSecretEncrypted, signingSecret), now.getTime());
@@ -529,6 +529,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       const currentWorkspace = workspaceId && authData.workspaces.find(item => item.id === workspaceId);
       const membership = currentUser && authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === workspaceId);
       if (url.pathname.startsWith('/api/') && !session && !apiKey) return json(res, 401, { error: '请先登录或提供 API Key' });
+      if ((session || apiKey) && (!membership || membership.disabledAt)) return json(res, 403, { error: '当前工作区访问已停用' }, session ? { 'set-cookie': clearSessionCookie(secureCookie) } : {});
       if (apiKey) {
         const acceptanceRead = versionedApi && req.method === 'GET' && ['/api/projects', '/api/runs', '/api/issues'].some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)) && apiKey.scopes.includes('acceptance:read');
         const acceptanceWrite = versionedApi && req.method === 'POST' && (url.pathname === '/api/runs' || /^\/api\/runs\/[^/]+\/(execute|retry)$/.test(url.pathname)) && apiKey.scopes.includes('acceptance:write');
@@ -647,7 +648,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         return json(res, 200, { read: requested.length, unreadCount: refreshed.filter(item => item.unread).length });
       }
       if (req.method === 'GET' && url.pathname === '/api/workspaces') {
-        const ids = authData.memberships.filter(item => item.userId === currentUser.id).map(item => item.workspaceId);
+        const ids = authData.memberships.filter(item => item.userId === currentUser.id && !item.disabledAt).map(item => item.workspaceId);
         return json(res, 200, authData.workspaces.filter(item => ids.includes(item.id)).map(item => ({ ...item, current: item.id === workspaceId })));
       }
       if (req.method === 'POST' && url.pathname === '/api/workspaces') {
@@ -676,13 +677,14 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         return json(res, 200, workspace);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments[3] === 'select') {
-        const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2]);
+        const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2] && !item.disabledAt);
         if (!targetMembership) return json(res, 404, { error: '工作区不存在' });
         await store.update(data => { data.sessions.find(item => item.tokenHash === cookieTokenHash).workspaceId = targetMembership.workspaceId; appendAudit(data, { workspaceId: targetMembership.workspaceId, actorUserId: currentUser.id, action: 'workspace.selected', entityType: 'workspace', entityId: targetMembership.workspaceId }); });
         return json(res, 200, { workspace: authData.workspaces.find(item => item.id === targetMembership.workspaceId), role: targetMembership.role });
       }
       if (req.method === 'GET' && url.pathname === '/api/members') {
         const members = authData.memberships.filter(item => item.workspaceId === workspaceId).map(item => ({ ...publicUser(authData.users.find(user => user.id === item.userId)), role: item.role, membershipId: item.id }));
+        for (const member of members) { const source = authData.memberships.find(item => item.id === member.membershipId); member.disabledAt = source.disabledAt || null; member.activeSessions = authData.sessions.filter(item => item.userId === member.id && item.workspaceId === workspaceId && new Date(item.expiresAt) > new Date()).length; }
         return json(res, 200, members);
       }
       if (req.method === 'POST' && url.pathname === '/api/members') {
@@ -744,6 +746,51 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return { membershipId: target.id, userId: target.userId, passwordResetAt: now, sessionsRevoked, mustChangePassword: true };
         });
         return json(res, 200, result);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'members' && segments[2] && ['disable', 'enable'].includes(segments[3])) {
+        requireRole(['owner']); const enable = segments[3] === 'enable'; const now = new Date().toISOString();
+        const changed = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.userId === currentUser.id) throw Object.assign(new Error('不能停用或启用自己的工作区访问'), { status: 400 });
+          if (!enable && target.role === 'owner' && data.memberships.filter(item => item.workspaceId === workspaceId && item.role === 'owner' && !item.disabledAt && item.id !== target.id).length < 1) throw Object.assign(new Error('工作区必须至少保留一名可用管理员'), { status: 409 });
+          if (enable) delete target.disabledAt; else target.disabledAt = now; target.updatedAt = now;
+          let sessionsRevoked = 0; let apiKeysRevoked = 0;
+          if (!enable) {
+            const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== target.userId || item.workspaceId !== workspaceId); sessionsRevoked = before - data.sessions.length;
+            for (const key of data.apiKeys.filter(item => item.workspaceId === workspaceId && item.createdByUserId === target.userId && !item.revokedAt)) { key.revokedAt = now; apiKeysRevoked += 1; }
+          }
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: enable ? 'member.enabled' : 'member.disabled', entityType: 'membership', entityId: target.id, details: { userId: target.userId, sessionsRevoked, apiKeysRevoked }, at: now });
+          return { membershipId: target.id, userId: target.userId, disabledAt: target.disabledAt || null, sessionsRevoked, apiKeysRevoked };
+        });
+        return json(res, 200, changed);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'members' && segments[2] && segments[3] === 'sessions' && segments[4] === 'revoke') {
+        requireRole(['owner']); const now = new Date().toISOString();
+        const revoked = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.userId === currentUser.id) throw Object.assign(new Error('请在账户安全中管理自己的设备'), { status: 400 });
+          const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== target.userId || item.workspaceId !== workspaceId); const sessionsRevoked = before - data.sessions.length;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.sessions_revoked', entityType: 'user', entityId: target.userId, details: { membershipId: target.id, sessionsRevoked }, at: now });
+          return { membershipId: target.id, userId: target.userId, sessionsRevoked, revokedAt: now };
+        });
+        return json(res, 200, revoked);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'members' && segments[2] && segments[3] === 'mfa' && segments[4] === 'reset') {
+        requireRole(['owner']); const now = new Date().toISOString();
+        const reset = await store.update(data => {
+          const target = data.memberships.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!target) throw Object.assign(new Error('成员不存在'), { status: 404 });
+          if (target.userId === currentUser.id) throw Object.assign(new Error('请在账户安全中管理自己的两步验证'), { status: 400 });
+          if (data.memberships.filter(item => item.userId === target.userId).length > 1) throw Object.assign(new Error('该账号属于多个工作区，请由账号本人重置两步验证'), { status: 409 });
+          const user = data.users.find(item => item.id === target.userId); if (!user.mfaSecretEncrypted) throw Object.assign(new Error('该成员尚未启用两步验证'), { status: 409 });
+          delete user.mfaSecretEncrypted; delete user.mfaRecoveryCodeHashes; delete user.mfaEnabledAt; delete user.mfaPendingSecretEncrypted; delete user.mfaPendingCreatedAt;
+          const before = data.sessions.length; data.sessions = data.sessions.filter(item => item.userId !== target.userId); data.mfaChallenges = data.mfaChallenges.filter(item => item.userId !== target.userId); const sessionsRevoked = before - data.sessions.length;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'member.mfa_reset', entityType: 'user', entityId: target.userId, details: { membershipId: target.id, sessionsRevoked }, at: now });
+          return { membershipId: target.id, userId: target.userId, mfaEnabled: false, sessionsRevoked, resetAt: now };
+        });
+        return json(res, 200, reset);
       }
       if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'members' && segments[2]) {
         requireRole(['owner']);

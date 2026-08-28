@@ -1001,6 +1001,32 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.removed'));
 });
 
+test('owners can suspend access, force sign-out and reset single-workspace MFA safely', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-member-security-'));
+  const storeFile = join(folder, 'store.json'); const server = createApp({ storeFile, signingSecret });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const ownerCookie = await setupOwner(base); const ownerRequest = authenticatedRequest(ownerCookie);
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '安全成员', email: 'security-member@example.com', password: 'security-member-password', role: 'member' }) });
+  let login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'security-member@example.com', password: 'security-member-password' }) });
+  let memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  const listed = await ownerRequest(base, '/api/members'); const listedMember = listed.body.find(item => item.id === member.body.id);
+  assert.equal(listedMember.activeSessions, 1); assert.equal(listedMember.disabledAt, null);
+
+  const forced = await ownerRequest(base, `/api/members/${member.body.membershipId}/sessions/revoke`, { method: 'POST' });
+  assert.equal(forced.status, 200); assert.equal(forced.body.sessionsRevoked, 1); assert.equal((await memberRequest(base, '/api/session')).status, 401);
+  login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'security-member@example.com', password: 'security-member-password' }) }); memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  const disabled = await ownerRequest(base, `/api/members/${member.body.membershipId}/disable`, { method: 'POST' });
+  assert.equal(disabled.status, 200); assert.equal(disabled.body.sessionsRevoked, 1); assert.ok(disabled.body.disabledAt); assert.equal((await memberRequest(base, '/api/session')).status, 401);
+  assert.equal((await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'security-member@example.com', password: 'security-member-password' }) })).status, 403);
+  const enabled = await ownerRequest(base, `/api/members/${member.body.membershipId}/enable`, { method: 'POST' }); assert.equal(enabled.status, 200); assert.equal(enabled.body.disabledAt, null);
+
+  const store = new JsonStore(storeFile); await store.update(data => { const user = data.users.find(item => item.id === member.body.id); user.mfaSecretEncrypted = encryptSecret('JBSWY3DPEHPK3PXP', signingSecret); user.mfaRecoveryCodeHashes = ['unused']; user.mfaEnabledAt = new Date().toISOString(); });
+  const mfaReset = await ownerRequest(base, `/api/members/${member.body.membershipId}/mfa/reset`, { method: 'POST' }); assert.equal(mfaReset.status, 200); assert.equal(mfaReset.body.mfaEnabled, false);
+  const afterReset = await store.read(); assert.equal(Boolean(afterReset.users.find(item => item.id === member.body.id).mfaSecretEncrypted), false);
+  const audit = await ownerRequest(base, '/api/audit');
+  for (const action of ['member.sessions_revoked', 'member.disabled', 'member.enabled', 'member.mfa_reset']) assert.ok(audit.body.some(item => item.action === action));
+});
+
 test('browser executor performs a real assertion and records screenshot evidence', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-browser-'));
   let webhookAttempts = 0; let receivedWebhook;

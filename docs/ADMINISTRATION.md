@@ -1,5 +1,11 @@
 # Workspace administration
 
+## Member access and account recovery
+
+工作区管理员可在“工作区管理 → 成员与角色”查看成员状态、在线设备数和 MFA 状态，并执行停用、恢复、强制下线、密码重置或 MFA 重置。停用是工作区级操作：历史验收与审计证据继续保留，但当前工作区会话立即失效，成员在该工作区创建的 API Key 同时撤销。
+
+MFA 属于用户身份而非单个工作区。为避免一个组织影响另一个组织，属于多个工作区的账号不能由单一工作区管理员重置 MFA，必须由账号本人处理。所有管理员安全操作都会写入审计时间线。
+
 ## Password recovery
 
 The login page exposes **忘记密码** when setup is complete. A request always returns the same accepted response whether or not the email exists, so the endpoint does not disclose account membership. Delivery requires both SMTP and `SHIPWITNESS_PUBLIC_URL`; otherwise the response remains generic and an owner must use the governed member-reset process.
