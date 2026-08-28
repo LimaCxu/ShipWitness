@@ -45,15 +45,24 @@ test('acceptance credential vault is owner-only and never returns secret materia
   const created = await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'login_password', value: plaintext }) });
   assert.equal(created.status, 201); assert.equal(created.body.name, 'LOGIN_PASSWORD');
   assert.equal(JSON.stringify(created.body).includes(plaintext), false); assert.equal(Object.hasOwn(created.body, 'encryptedValue'), false);
-  const listed = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(listed.status, 200); assert.equal(listed.body.length, 1);
+  const listed = await ownerRequest(base, '/api/acceptance-secrets'); assert.equal(listed.status, 200); assert.equal(listed.body.length, 1); assert.equal(listed.body[0].referenceCount, 0);
   assert.equal(JSON.stringify(listed.body).includes(plaintext), false); assert.equal(Object.hasOwn(listed.body[0], 'encryptedValue'), false);
   assert.equal((await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'LOGIN_PASSWORD', value: 'other' }) })).status, 409);
   await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'secret-member@example.com', password: 'member-password-123', role: 'member' }) });
   const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'secret-member@example.com', password: 'member-password-123' }) });
   const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
   assert.equal((await memberRequest(base, '/api/acceptance-secrets')).status, 403);
+  assert.equal((await memberRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ value: 'forbidden-rotation' }) })).status, 403);
+  const project = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '凭据验收项目', repo: folder, url: base, branch: 'main' }) });
+  const contract = await ownerRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, code: 'AUTH-SECRET', title: '使用保险箱登录', description: '登录密码不得进入合同', steps: [{ action: 'fill', selector: '#password', secretRef: 'LOGIN_PASSWORD' }] }) });
+  assert.equal(contract.status, 201); assert.equal((await ownerRequest(base, '/api/acceptance-secrets')).body[0].referenceCount, 1);
+  assert.equal((await ownerRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'DELETE' })).status, 409);
+  const rotatedPlaintext = 'rotated-customer-password'; const rotated = await ownerRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'PATCH', body: JSON.stringify({ value: rotatedPlaintext }) });
+  assert.equal(rotated.status, 200); assert.equal(rotated.body.name, 'LOGIN_PASSWORD'); assert.equal(JSON.stringify(rotated.body).includes(rotatedPlaintext), false); assert.equal(Object.hasOwn(rotated.body, 'encryptedValue'), false);
+  assert.equal((await ownerRequest(base, `/api/contracts/${contract.body.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: false }) })).status, 200);
   assert.equal((await ownerRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'DELETE' })).status, 200);
   assert.deepEqual((await ownerRequest(base, '/api/acceptance-secrets')).body, []);
+  const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.some(item => item.action === 'acceptance_secret.rotated'), true); assert.equal(JSON.stringify(audit.body).includes(rotatedPlaintext), false);
 });
 
 test('project, preflight, run and dossier API work together', async t => {

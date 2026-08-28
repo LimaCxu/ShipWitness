@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.45
+
+- Added in-place acceptance credential rotation without changing contract references.
+- Credential listings now show active contract reference counts, and deletion is blocked while an enabled contract in an active project still depends on the credential.
+- Added owner-only rotation controls, audit events, and regression coverage that proves plaintext stays out of API and audit responses.
+
 ## 0.4.0-dev.44
 
 - Added an owner-managed encrypted acceptance credential vault for authenticated browser checks.

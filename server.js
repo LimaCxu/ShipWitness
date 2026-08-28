@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.44';
+const serviceVersion = '0.4.0-dev.45';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -1097,7 +1097,9 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'GET' && url.pathname === '/api/acceptance-secrets') {
         requireRole(['owner']);
-        return json(res, 200, authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(({ encryptedValue: hidden, ...item }) => item));
+        const activeProjectIds = new Set(authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt).map(item => item.id));
+        const referenceCount = name => authData.contracts.filter(item => item.workspaceId === workspaceId && activeProjectIds.has(item.projectId) && item.enabled && (item.steps || []).some(step => step.secretRef === name)).length;
+        return json(res, 200, authData.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(({ encryptedValue: hidden, ...item }) => ({ ...item, referenceCount: referenceCount(item.name) })));
       }
       if (req.method === 'POST' && url.pathname === '/api/acceptance-secrets') {
         requireRole(['owner']); const input = await body(req); const name = required(input.name, '凭据名称', 64).toUpperCase();
@@ -1105,8 +1107,13 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const value = required(input.value, '凭据值', 10_000); const created = await store.update(data => { if (data.acceptanceSecrets.some(item => item.workspaceId === workspaceId && item.name === name)) throw Object.assign(new Error('凭据名称已存在；请先删除再重新创建'), { status: 409 }); const now = new Date().toISOString(); const item = { id: createId('asec'), workspaceId, name, encryptedValue: encryptSecret(value, signingSecret), createdByUserId: currentUser.id, createdAt: now, updatedAt: now }; data.acceptanceSecrets.push(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.created', entityType: 'acceptance_secret', entityId: item.id, details: { name }, at: now }); return item; });
         const { encryptedValue: hidden, ...safe } = created; return json(res, 201, safe);
       }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'acceptance-secrets' && segments[2]) {
+        requireRole(['owner']); const input = await body(req); const value = required(input.value, '新凭据值', 10_000);
+        const rotated = await store.update(data => { const item = data.acceptanceSecrets.find(candidate => candidate.id === segments[2] && candidate.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); const at = new Date().toISOString(); item.encryptedValue = encryptSecret(value, signingSecret); item.updatedAt = at; item.rotatedByUserId = currentUser.id; appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.rotated', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name }, at }); return item; });
+        const { encryptedValue: hidden, ...safe } = rotated; return json(res, 200, safe);
+      }
       if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'acceptance-secrets' && segments[2]) {
-        requireRole(['owner']); const removed = await store.update(data => { const item = data.acceptanceSecrets.find(value => value.id === segments[2] && value.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); data.acceptanceSecrets = data.acceptanceSecrets.filter(value => value.id !== item.id); const at = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.deleted', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name }, at }); return { id: item.id, name: item.name, deletedAt: at }; }); return json(res, 200, removed);
+        requireRole(['owner']); const removed = await store.update(data => { const item = data.acceptanceSecrets.find(value => value.id === segments[2] && value.workspaceId === workspaceId); if (!item) throw Object.assign(new Error('验收凭据不存在'), { status: 404 }); const activeProjectIds = new Set(data.projects.filter(project => project.workspaceId === workspaceId && !project.archivedAt).map(project => project.id)); const references = data.contracts.filter(contract => contract.workspaceId === workspaceId && activeProjectIds.has(contract.projectId) && contract.enabled && (contract.steps || []).some(step => step.secretRef === item.name)); if (references.length) throw Object.assign(new Error(`仍有 ${references.length} 条启用的验收标准引用该凭据；请轮换凭据或先停用相关标准`), { status: 409 }); data.acceptanceSecrets = data.acceptanceSecrets.filter(value => value.id !== item.id); const at = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'acceptance_secret.deleted', entityType: 'acceptance_secret', entityId: item.id, details: { name: item.name }, at }); return { id: item.id, name: item.name, deletedAt: at }; }); return json(res, 200, removed);
       }
       if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'api-keys' && segments[2]) {
         requireRole(['owner']);
