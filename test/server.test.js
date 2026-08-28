@@ -62,6 +62,13 @@ test('acceptance credential vault is owner-only and never returns secret materia
   assert.equal((await ownerRequest(base, `/api/contracts/${contract.body.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: false }) })).status, 200);
   assert.equal((await ownerRequest(base, `/api/acceptance-secrets/${created.body.id}`, { method: 'DELETE' })).status, 200);
   assert.deepEqual((await ownerRequest(base, '/api/acceptance-secrets')).body, []);
+  assert.equal((await ownerRequest(base, `/api/contracts/${contract.body.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: true }) })).status, 200);
+  const missingContracts = await ownerRequest(base, `/api/contracts?projectId=${project.body.id}`); assert.deepEqual(missingContracts.body[0].missingSecretRefs, ['LOGIN_PASSWORD']);
+  const missingPreflight = await ownerRequest(base, `/api/projects/${project.body.id}/preflight`, { method: 'POST' }); assert.equal(missingPreflight.body.checks.credentials.status, 'failed'); assert.deepEqual(missingPreflight.body.checks.credentials.missingSecretRefs, ['LOGIN_PASSWORD']);
+  const blockedRun = await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '验证登录凭据依赖' }) }); assert.equal(blockedRun.status, 409); assert.match(blockedRun.body.error, /LOGIN_PASSWORD/);
+  await ownerRequest(base, '/api/acceptance-secrets', { method: 'POST', body: JSON.stringify({ name: 'LOGIN_PASSWORD', value: 'restored-safe-value' }) });
+  assert.deepEqual((await ownerRequest(base, `/api/contracts?projectId=${project.body.id}`)).body[0].missingSecretRefs, []); assert.equal((await ownerRequest(base, `/api/projects/${project.body.id}/preflight`, { method: 'POST' })).body.checks.credentials.status, 'ready');
+  assert.equal((await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, requirement: '验证登录凭据依赖' }) })).status, 201);
   const audit = await ownerRequest(base, '/api/audit'); assert.equal(audit.body.some(item => item.action === 'acceptance_secret.rotated'), true); assert.equal(JSON.stringify(audit.body).includes(rotatedPlaintext), false);
 });
 

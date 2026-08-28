@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.46
+
+- Added credential dependency diagnostics to acceptance-contract listings and project preflight.
+- Missing references are visible before execution, and task creation now blocks with an actionable administrator instruction instead of creating a doomed run.
+- Added UI warnings and end-to-end coverage for missing, restored, and fully configured credential dependencies.
+
 ## 0.4.0-dev.45
 
 - Added in-place acceptance credential rotation without changing contract references.

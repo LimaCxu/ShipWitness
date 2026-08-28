@@ -418,7 +418,7 @@ const renderContracts = () => {
   const active = backendContracts.filter(item => item.enabled).length;
   contractCount.textContent = active;
   activeContractCount.textContent = `${active} 条启用`;
-  contractList.innerHTML = backendContracts.map(item => `<article class="contract-item ${item.enabled ? '' : 'disabled'}" data-id="${item.id}"><div class="contract-item-head"><span>${escapeHtml(item.code)} · V${item.version}</span><em>${item.severity === 'blocker' ? '阻断' : item.severity === 'major' ? '重要' : '一般'}</em></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.description)}</p><footer><span>${escapeHtml(item.category)} · ${(item.steps || []).length} 个步骤 · ${item.enabled ? '已启用' : '已停用'}</span><div><button data-action="toggle">${item.enabled ? '停用' : '启用'}</button><button data-action="edit">编辑</button></div></footer></article>`).join('') || '<div class="contract-empty">还没有验收标准</div>';
+  contractList.innerHTML = backendContracts.map(item => `<article class="contract-item ${item.enabled ? '' : 'disabled'} ${(item.missingSecretRefs || []).length ? 'dependency-missing' : ''}" data-id="${item.id}"><div class="contract-item-head"><span>${escapeHtml(item.code)} · V${item.version}</span><em>${(item.missingSecretRefs || []).length ? '缺少凭据' : item.severity === 'blocker' ? '阻断' : item.severity === 'major' ? '重要' : '一般'}</em></div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.description)}</p>${(item.missingSecretRefs || []).length ? `<div class="contract-dependency-warning">管理员需配置：${item.missingSecretRefs.map(escapeHtml).join(' · ')}</div>` : ''}<footer><span>${escapeHtml(item.category)} · ${(item.steps || []).length} 个步骤 · ${item.enabled ? '已启用' : '已停用'}</span><div><button data-action="toggle">${item.enabled ? '停用' : '启用'}</button><button data-action="edit">编辑</button></div></footer></article>`).join('') || '<div class="contract-empty">还没有验收标准</div>';
   syncWizardContracts(backendContracts);
 };
 
@@ -633,7 +633,7 @@ runPreflight.onclick = async () => {
   runPreflight.textContent = '检查中…';
   try {
     const result = await api(`/api/projects/${backendProjectId}/preflight`, { method: 'POST' });
-    const names = ['repo', 'url', 'browser', 'handoff'];
+    const names = ['repo', 'url', 'browser', 'credentials', 'handoff'];
     names.forEach(name => {
       const item = document.querySelector(`[data-check="${name}"]`);
       const check = result.checks[name];
@@ -643,7 +643,7 @@ runPreflight.onclick = async () => {
     });
     const ready = Object.values(result.checks).filter(item => item.status === 'ready').length;
     preflightSummary.innerHTML = `<b>${ready} 项就绪</b> · 后端真实检查`;
-    connectText.textContent = `接入 ${ready}/4`;
+    connectText.textContent = `接入 ${ready}/${names.length}`;
     toast('后端配置检查已完成');
   } catch (error) { toast(error.message); }
   finally { runPreflight.disabled = false; runPreflight.textContent = '重新检查'; }

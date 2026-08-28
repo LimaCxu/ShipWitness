@@ -27,7 +27,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.45';
+const serviceVersion = '0.4.0-dev.46';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -1322,7 +1322,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt);
         if (!project) return json(res, 404, { error: '项目不存在' });
         const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url, allowedTargetOrigins), checkBrowserAvailability()]);
-        const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
+        const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name)); const requiredSecrets = [...new Set(data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id && item.enabled).flatMap(item => (item.steps || []).map(step => step.secretRef).filter(Boolean)))]; const missingSecretRefs = requiredSecrets.filter(name => !availableSecrets.has(name));
+        const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, credentials: missingSecretRefs.length ? { status: 'failed', detail: `缺少 ${missingSecretRefs.length} 个验收凭据：${missingSecretRefs.join('、')}`, missingSecretRefs } : { status: 'ready', detail: requiredSecrets.length ? `${requiredSecrets.length} 个验收凭据均已安全配置` : '当前启用标准不需要验收凭据', missingSecretRefs: [] }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
         return json(res, 200, { projectId: project.id, checkedAt: new Date().toISOString(), checks });
       }
       if (req.method === 'GET' && url.pathname === '/api/contracts/export') {
@@ -1375,7 +1376,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const data = await store.read();
         const contracts = (data.contracts || []).filter(item => item.workspaceId === workspaceId && (!url.searchParams.get('projectId') || item.projectId === url.searchParams.get('projectId')));
         contracts.sort((a, b) => Number(b.enabled) - Number(a.enabled) || b.updatedAt.localeCompare(a.updatedAt));
-        return json(res, 200, contracts);
+        const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name));
+        return json(res, 200, contracts.map(item => ({ ...item, missingSecretRefs: [...new Set((item.steps || []).map(step => step.secretRef).filter(name => name && !availableSecrets.has(name)))] })));
       }
       if (req.method === 'POST' && url.pathname === '/api/contracts') {
         const input = await body(req);
@@ -1437,6 +1439,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => { const { sourceFeedbackId: ignored, ...safe } = item; return { ...safe, steps: normalizeSteps(item.steps) }; }) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version, ...(item.sourceFeedbackId ? { sourceFeedbackId: item.sourceFeedbackId } : {}) }));
+          const availableSecrets = new Set(data.acceptanceSecrets.filter(item => item.workspaceId === workspaceId).map(item => item.name)); const missingSecretRefs = [...new Set(criteria.flatMap(item => (item.steps || []).map(step => step.secretRef).filter(name => name && !availableSecrets.has(name))))];
+          if (missingSecretRefs.length) throw Object.assign(new Error(`验收任务缺少凭据：${missingSecretRefs.join('、')}；请管理员先在凭据保险箱中配置`), { status: 409 });
           const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, repositorySnapshot: project.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
           data.runs.unshift(value);
           if (versionedApi && apiKey) data.idempotencyRecords.unshift({ id: createId('idem'), workspaceId, apiKeyId: apiKey.id, operation: 'run.create', key: idempotencyKey, requestHash, entityId: value.id, createdAt: value.createdAt });

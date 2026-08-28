@@ -35,6 +35,7 @@
 - [x] Workspace-scoped pilot feedback intake, triage, team-inbox routing, audit, and export
 - [x] User-scoped login-device management and encrypted TOTP two-step verification with one-time recovery codes
 - [x] Encrypted acceptance credential vault with reference-safe rotation and active-contract deletion protection
+- [x] Pre-execution credential dependency diagnostics across contracts, project preflight, and run creation
 
 ## 1.0 — Self-hosted release gate
 

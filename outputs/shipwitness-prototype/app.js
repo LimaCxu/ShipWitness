@@ -46,6 +46,7 @@ document.body.insertAdjacentHTML('beforeend',`<aside class="connect-panel" id="c
     <article data-check="repo"><i></i><div><b>项目目录可读取</b><p>确认路径存在，并能识别当前提交版本。</p></div><em>待检查</em></article>
     <article data-check="url"><i></i><div><b>测试网址可访问</b><p>确认页面响应且不是错误页。</p></div><em>待检查</em></article>
     <article data-check="browser"><i></i><div><b>浏览器可以执行路径</b><p>确认页面操作和证据截图能力可用。</p></div><em>待检查</em></article>
+    <article data-check="credentials"><i></i><div><b>验收凭据依赖完整</b><p>确认启用标准引用的测试凭据均已安全配置。</p></div><em>待检查</em></article>
     <article data-check="handoff"><i></i><div><b>返工结果有去向</b><p>确认缺陷可以保存或交给编码 AI。</p></div><em>待检查</em></article>
   </div></section><section class="connect-boundary"><b>当前连接真实执行服务</b><p>目录、Git 状态和测试网址由后端检查；配置浏览器步骤后，可执行真实点击、输入、断言和截图取证。</p></section><footer><button id="saveConnection" disabled>保存接入配置</button></footer></aside><div class="connect-mask" id="connectMask" hidden></div>`);
 
