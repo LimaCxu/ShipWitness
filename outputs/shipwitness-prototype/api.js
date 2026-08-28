@@ -12,6 +12,7 @@ let backendProject = null;
 let dashboardRun = null;
 let dashboardCriterionIndex = 0;
 let dashboardStage = 'claim';
+let selectedBackendIssue = null;
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[character]));
 const defaultContracts = [
@@ -109,7 +110,7 @@ function renderLiveDashboard(project, run) {
     claim: { kicker: '验收标准快照', title: '必须证明的用户结果', body: criterion.description, visual: `<div class="record"><div class="record-head"><span>${escapeHtml(criterion.code || '未编号')}</span><code>V${criterion.version || 1}</code></div><blockquote>${escapeHtml(criterion.title)}</blockquote><dl><div><dt>分类</dt><dd>${escapeHtml(criterion.category || '业务流程')}</dd></div><div><dt>级别</dt><dd>${criterion.severity === 'blocker' ? '阻断发布' : '一般'}</dd></div><div><dt>执行步骤</dt><dd>${criterion.steps?.length || 0}</dd></div></dl></div>` },
     action: { kicker: '真实浏览器计划', title: criterion.steps?.length ? `执行 ${criterion.steps.length} 个受限步骤` : '尚未配置浏览器步骤', body: criterion.steps?.length ? '执行器只运行标准快照中允许的动作，不执行任意脚本。' : '没有步骤时不会猜测业务结果。', visual: `<ol class="live-step-list">${(criterion.steps || []).map((step, index) => `<li><b>${index + 1}</b><span>${escapeHtml(stepOptions.find(item => item[0] === step.action)?.[1] || step.action)}<small>${escapeHtml(step.path || step.selector || step.value || '')}</small></span></li>`).join('') || '<li class="empty">请在标准库中添加执行步骤</li>'}</ol>` },
     observe: { kicker: '浏览器观察结果', title: resultLabel(result.result), body: result.reason || '尚未执行', visual: result.screenshotUrl ? `<a class="evidence-shot" href="${result.screenshotUrl}" target="_blank"><img src="${result.screenshotUrl}" alt="${escapeHtml(criterion.title)}截图证据"><span>打开完整截图 ↗</span></a>` : `<div class="observation"><div class="fact-row"><span>完成步骤</span><b>${result.steps?.filter(step => step.status === 'passed').length || 0} / ${result.steps?.length || criterion.steps?.length || 0}</b></div><div class="fact-row"><span>网络响应</span><b>${result.network?.length || 0} 条</b></div><div class="fact-row"><span>最终网址</span><b>${escapeHtml(result.finalUrl || '尚未记录')}</b></div></div>` },
-    verdictStage: { kicker: '证据裁决', title: verdictMeta(result.result).label, body: result.reason || verdictMeta(result.result).detail, visual: `<div class="verdict-card"><span>${result.result === 'passed' ? '验收通过' : result.result === 'failed' ? '验收失败' : '不作通过判断'}</span><strong>${verdictMeta(result.result).label}</strong><p>${escapeHtml(result.reason || verdictMeta(result.result).detail)}</p></div>` }
+    verdictStage: { kicker: '证据裁决', title: verdictMeta(result.result).label, body: result.reason || verdictMeta(result.result).detail, visual: `<div class="verdict-card"><span>${result.result === 'passed' ? '验收通过' : result.result === 'failed' ? '验收失败' : '不作通过判断'}</span><strong>${verdictMeta(result.result).label}</strong><p>${escapeHtml(result.reason || verdictMeta(result.result).detail)}</p>${['failed', 'blocked'].includes(result.result) ? '<button class="return-work">生成真实返工单</button>' : ''}</div>` }
   };
   const stage = stages[dashboardStage]; stageKicker.textContent = stage.kicker; stageTitle.textContent = stage.title; stageBody.textContent = stage.body; stageVisual.innerHTML = stage.visual;
   stageTime.textContent = run.execution?.finishedAt ? new Date(run.execution.finishedAt).toLocaleTimeString('zh-CN') : '—'; stageDuration.textContent = result.durationMs ? `${result.durationMs} ms` : '—';
@@ -304,17 +305,75 @@ executeRunBtn.onclick = async () => {
   finally { executeRunBtn.disabled = false; }
 };
 
-handoffIssue.onclick = async () => {
-  if (!backendRunId) return toast('请先创建验收任务');
-  const current = issueMap[selectedIssue] || issueMap.permissions;
+const issueStatusLabel = status => ({ open: '待交回', handed_off: '等待修复', fixed: '等待复验', retesting: '复验中', verified: '复验通过', closed: '已关闭' }[status] || '待创建');
+const describeStep = step => {
+  const label = stepOptions.find(item => item[0] === step.action)?.[1] || step.action;
+  return `${label}：${step.path || step.selector || step.value || '当前页面'}`;
+};
+const fillIssueDialog = (criterion, result, issue = null) => {
+  selectedBackendIssue = issue;
+  issueCode.textContent = issue?.id?.toUpperCase() || criterion.code || 'NEW';
+  issueTitle.textContent = issue?.title || `${criterion.title}未达到验收标准`;
+  issueContract.textContent = criterion.description;
+  const steps = issue?.reproductionSteps?.length ? issue.reproductionSteps : (criterion.steps || []).map(describeStep);
+  issueSteps.innerHTML = steps.map(step => `<li>${escapeHtml(step)}</li>`).join('') || '<li>当前标准没有可复现步骤</li>';
+  issueActual.textContent = issue?.actual || result.reason || '执行结果未达到标准';
+  issueExpected.textContent = issue?.expected || criterion.description;
+  issuePrompt.textContent = `修复“${criterion.title}”。保持验收标准不变；完成后说明修改位置，并确保以下浏览器路径可以复验：${steps.join('；') || criterion.description}`;
+  issueSeverity.textContent = criterion.severity === 'blocker' ? '阻断发布' : criterion.severity === 'major' ? '重要' : '一般';
+  issueEvidence.textContent = result.screenshotUrl ? '截图 + 步骤 + 网络记录' : '步骤 + 执行记录';
+  issueState.textContent = issueStatusLabel(issue?.status);
+  issueState.classList.toggle('sent', Boolean(issue));
+  handoffIssue.hidden = ['fixed', 'retesting', 'verified', 'closed'].includes(issue?.status);
+  handoffIssue.disabled = false;
+  handoffIssue.textContent = !issue ? '创建返工单' : issue.status === 'open' ? '标记为已交回' : '已交回，等待修复';
+  retestIssue.hidden = !issue || !['handed_off', 'fixed'].includes(issue.status);
+  issueHint.textContent = issue ? `状态变化已记录 · ${issue.id}` : '创建后会进入项目验收卷宗。';
+};
+
+window.shipwitnessOpenIssue = async () => {
+  if (!dashboardRun?.execution) return toast('请先执行真实验收');
+  const criterion = dashboardRun.criteria[dashboardCriterionIndex];
+  const result = criterionResult(dashboardRun, dashboardCriterionIndex);
+  if (!['failed', 'blocked'].includes(result.result)) return toast('只有失败或阻断项需要返工');
   try {
-    await api('/api/issues', { method: 'POST', body: JSON.stringify({ runId: backendRunId, title: current.title, contract: issueContract.textContent, actual: issueActual.textContent, expected: issueExpected.textContent }) });
-    issueState.textContent = '已写入后端';
-    issueState.classList.add('sent');
-    handoffIssue.textContent = '已交回，等待修复';
-    handoffIssue.disabled = true;
-    toast('返工单已保存到后端');
+    const issues = await api(`/api/issues?runId=${dashboardRun.id}`);
+    const criterionId = criterion.contractId || criterion.code;
+    fillIssueDialog(criterion, result, issues.find(item => item.criterionId === criterionId));
+    issueDialog.showModal();
   } catch (error) { toast(error.message); }
+};
+
+handoffIssue.onclick = async () => {
+  const criterion = dashboardRun?.criteria?.[dashboardCriterionIndex];
+  const result = criterion && criterionResult(dashboardRun, dashboardCriterionIndex);
+  if (!criterion || !result) return toast('没有可处理的失败证据');
+  handoffIssue.disabled = true;
+  try {
+    if (!selectedBackendIssue) {
+      selectedBackendIssue = await api('/api/issues', { method: 'POST', body: JSON.stringify({ runId: dashboardRun.id, criterionId: criterion.contractId || criterion.code, title: `${criterion.title}未达到验收标准`, contract: criterion.description, reproductionSteps: (criterion.steps || []).map(describeStep), actual: result.reason, expected: criterion.description }) });
+      fillIssueDialog(criterion, result, selectedBackendIssue);
+      toast('真实返工单已创建');
+    } else if (selectedBackendIssue.status === 'open') {
+      selectedBackendIssue = await api(`/api/issues/${selectedBackendIssue.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'handed_off', note: '已交回开发处理' }) });
+      fillIssueDialog(criterion, result, selectedBackendIssue);
+      toast('返工单已标记为等待修复');
+    }
+  } catch (error) { toast(error.message); }
+  finally { handoffIssue.disabled = false; }
+};
+
+retestIssue.onclick = async () => {
+  if (!selectedBackendIssue) return;
+  retestIssue.disabled = true;
+  try {
+    const created = await api(`/api/issues/${selectedBackendIssue.id}/retest`, { method: 'POST' });
+    backendRunId = created.run.id;
+    issueDialog.close();
+    await loadRunTask();
+    toast('定向复验任务已创建，只执行当前失败路径');
+  } catch (error) { toast(error.message); }
+  finally { retestIssue.disabled = false; }
 };
 
 signDecision.onclick = async () => {

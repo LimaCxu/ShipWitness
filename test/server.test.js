@@ -58,8 +58,30 @@ test('project, preflight, run and dossier API work together', async t => {
   const detail = await request(base, `/api/runs/${run.body.id}`);
   assert.equal(detail.body.execution.executor, 'shipwitness-basic-v1');
 
-  const issue = await request(base, '/api/issues', { method: 'POST', body: JSON.stringify({ runId: run.body.id, title: '退出失败', contract: '退出后回到登录页', actual: '仍能看到数据', expected: '跳转登录页' }) });
+  const issue = await request(base, '/api/issues', { method: 'POST', body: JSON.stringify({ runId: run.body.id, criterionId: contract.body.id, title: '退出失败', contract: '退出后回到登录页', actual: '仍能看到数据', expected: '跳转登录页' }) });
   assert.equal(issue.status, 201);
+  assert.equal(issue.body.status, 'open');
+  assert.equal(issue.body.evidence.result, 'evidence_insufficient');
+
+  const duplicate = await request(base, '/api/issues', { method: 'POST', body: JSON.stringify({ runId: run.body.id, criterionId: contract.body.id, title: '重复返工', contract: '退出后回到登录页', actual: '仍能看到数据', expected: '跳转登录页' }) });
+  assert.equal(duplicate.status, 409);
+
+  const handedOff = await request(base, `/api/issues/${issue.body.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'handed_off', note: '交回开发' }) });
+  assert.equal(handedOff.status, 200);
+  assert.equal(handedOff.body.timeline.length, 2);
+
+  const listedIssues = await request(base, `/api/issues?runId=${run.body.id}`);
+  assert.equal(listedIssues.body.length, 1);
+
+  const retest = await request(base, `/api/issues/${issue.body.id}/retest`, { method: 'POST' });
+  assert.equal(retest.status, 201);
+  assert.equal(retest.body.run.parentRunId, run.body.id);
+  assert.equal(retest.body.run.criteria.length, 1);
+
+  const retestExecution = await request(base, `/api/runs/${retest.body.run.id}/execute`, { method: 'POST' });
+  assert.equal(retestExecution.status, 200);
+  const refreshedIssues = await request(base, `/api/issues?runId=${run.body.id}`);
+  assert.equal(refreshedIssues.body[0].status, 'handed_off');
 
   const decision = await request(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, owner: '负责人', verdict: 'hold' }) });
   assert.equal(decision.status, 201);

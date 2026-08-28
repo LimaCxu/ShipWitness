@@ -13,7 +13,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.3.0';
+const serviceVersion = '0.4.0-dev.0';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -192,7 +192,19 @@ export function createApp({ storeFile = defaultStore } = {}) {
         try {
           const hasBrowserSteps = run.criteria.some(item => Array.isArray(item.steps) && item.steps.length);
           const execution = hasBrowserSteps ? await executeBrowserRun({ project, run, artifactsDir }) : await executeRun(project, run);
-          const completed = await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString(); return current; });
+          const completed = await store.update(data => {
+            const current = data.runs.find(item => item.id === run.id);
+            current.status = 'completed'; current.execution = execution; current.completedAt = new Date().toISOString();
+            for (const issueId of current.issueIds || []) {
+              const issue = data.issues.find(item => item.id === issueId);
+              if (!issue) continue;
+              issue.status = execution.verdict === 'passed' ? 'verified' : 'handed_off';
+              issue.updatedAt = current.completedAt;
+              issue.timeline ||= [];
+              issue.timeline.push({ status: issue.status, at: current.completedAt, note: execution.verdict === 'passed' ? '定向复验通过' : `定向复验未通过：${execution.summary}` });
+            }
+            return current;
+          });
           return json(res, 200, completed);
         } catch (error) {
           await store.update(data => { const current = data.runs.find(item => item.id === run.id); current.status = 'failed'; current.failure = '基础执行器发生内部错误'; });
@@ -201,8 +213,71 @@ export function createApp({ storeFile = defaultStore } = {}) {
       }
       if (req.method === 'POST' && url.pathname === '/api/issues') {
         const input = await body(req);
-        const issue = await store.update(data => { const value = { id: createId('issue'), runId: required(input.runId, '验收记录'), title: required(input.title, '标题'), contract: required(input.contract, '验收标准'), actual: required(input.actual, '实际结果'), expected: required(input.expected, '正确结果'), status: 'open', createdAt: new Date().toISOString() }; data.issues.unshift(value); return value; });
+        const issue = await store.update(data => {
+          const run = data.runs.find(item => item.id === input.runId);
+          if (!run) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          const criterion = input.criterionId ? run.criteria.find(item => (item.contractId || item.code) === input.criterionId) : null;
+          const result = criterion && run.execution?.criteriaResults?.find(item => item.title === criterion.title);
+          if (input.criterionId && !criterion) throw Object.assign(new Error('验收标准不属于该任务'), { status: 400 });
+          if (result?.result === 'passed') throw Object.assign(new Error('通过项不能创建返工单'), { status: 409 });
+          const duplicate = data.issues.find(item => item.runId === run.id && item.criterionId === input.criterionId && !['verified', 'closed'].includes(item.status));
+          if (duplicate) throw Object.assign(new Error('该失败项已有未关闭的返工单'), { status: 409 });
+          const now = new Date().toISOString();
+          const value = {
+            id: createId('issue'), runId: run.id, projectId: run.projectId,
+            criterionId: input.criterionId || null, code: criterion?.code || input.code || 'ISSUE',
+            title: required(input.title || `${criterion?.title || '验收项'}需要返工`, '标题'),
+            contract: required(input.contract || criterion?.description, '验收标准'),
+            reproductionSteps: Array.isArray(input.reproductionSteps) ? input.reproductionSteps.map(String).filter(Boolean).slice(0, 20) : (criterion?.steps || []).map(step => JSON.stringify(step)),
+            actual: required(input.actual || result?.reason, '实际结果'),
+            expected: required(input.expected || criterion?.description, '正确结果'),
+            evidence: result ? { result: result.result, reason: result.reason, screenshotUrl: result.screenshotUrl || null, finalUrl: result.finalUrl || null } : null,
+            severity: criterion?.severity || input.severity || 'blocker', status: 'open', createdAt: now, updatedAt: now,
+            timeline: [{ status: 'open', at: now, note: '从验收证据创建' }]
+          };
+          data.issues.unshift(value); return value;
+        });
         return json(res, 201, issue);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/issues') {
+        const data = await store.read();
+        const runId = url.searchParams.get('runId');
+        const issues = data.issues.filter(item => !runId || item.runId === runId || item.retestRunId === runId);
+        return json(res, 200, issues);
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments.length === 3) {
+        const input = await body(req);
+        const allowed = ['open', 'handed_off', 'fixed', 'verified', 'closed'];
+        const issue = await store.update(data => {
+          const current = data.issues.find(item => item.id === segments[2]);
+          if (!current) throw Object.assign(new Error('返工单不存在'), { status: 404 });
+          if (!allowed.includes(input.status)) throw Object.assign(new Error('返工单状态无效'), { status: 400 });
+          if (current.status !== input.status) {
+            current.status = input.status;
+            current.updatedAt = new Date().toISOString();
+            current.timeline ||= [];
+            current.timeline.push({ status: input.status, at: current.updatedAt, note: String(input.note || '').slice(0, 500) });
+          }
+          return current;
+        });
+        return json(res, 200, issue);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'issues' && segments[2] && segments[3] === 'retest') {
+        const retest = await store.update(data => {
+          const issue = data.issues.find(item => item.id === segments[2]);
+          if (!issue) throw Object.assign(new Error('返工单不存在'), { status: 404 });
+          const source = data.runs.find(item => item.id === issue.runId);
+          if (!source) throw Object.assign(new Error('原验收记录不存在'), { status: 409 });
+          const criteria = issue.criterionId ? source.criteria.filter(item => (item.contractId || item.code) === issue.criterionId) : source.criteria;
+          if (!criteria.length) throw Object.assign(new Error('没有可复验的标准'), { status: 409 });
+          const now = new Date().toISOString();
+          const run = { id: createId('run'), projectId: source.projectId, requirement: `复验返工单 ${issue.id}：${issue.title}`, criteria, status: 'queued', parentRunId: source.id, issueIds: [issue.id], createdAt: now };
+          data.runs.unshift(run);
+          issue.status = 'retesting'; issue.retestRunId = run.id; issue.updatedAt = now;
+          issue.timeline ||= []; issue.timeline.push({ status: 'retesting', at: now, note: `已创建复验任务 ${run.id}` });
+          return { issue, run };
+        });
+        return json(res, 201, retest);
       }
       if (req.method === 'POST' && url.pathname === '/api/decisions') {
         const input = await body(req);

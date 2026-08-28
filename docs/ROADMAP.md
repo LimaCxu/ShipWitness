@@ -15,6 +15,7 @@
 
 ## 0.4 — Team workflow
 
+- [x] Evidence-linked issues, handoff state, and focused retest runs
 - Authentication and workspace isolation
 - Roles, approvals, audit timeline, and issue integrations
 - PostgreSQL storage and migrations
