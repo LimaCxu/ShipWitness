@@ -55,6 +55,8 @@ test('project, preflight, run and dossier API work together', async t => {
   assert.match(frontendScriptText, /创建新任务并重试/);
   assert.match(frontendScriptText, /runProject\.value = backendProject\.name/);
   assert.match(frontendScriptText, /securityFindingDialog/);
+  assert.match(frontendScriptText, /account-settings-nav/);
+  assert.match(frontendScriptText, /dataset\.accountAllowed = String\(canAudit\)/);
   assert.doesNotMatch(frontendScriptText, /prompt\('填写独立复测编号|风险将临时接受 30 天/);
   const frontendShell = await fetch(`${base}/`); const frontendShellText = await frontendShell.text();
   assert.match(frontendShellText, /<body class="auth-pending">/);

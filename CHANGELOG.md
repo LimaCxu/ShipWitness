@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.29
+
+- Reorganized the workspace drawer into Team, Release Gate, Integrations, and Governance navigation instead of one long settings page.
+- Kept category availability role-aware so members, approvers, and owners only see settings they can actually use.
+- Added a compact sticky governance index with clear focus treatment and responsive column counts.
+
 ## 0.4.0-dev.28
 
 - Replaced native browser prompts in security remediation with a structured business dialog for retest evidence and time-bound risk acceptance.
