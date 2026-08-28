@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../server.js';
 
+const signingSecret = Buffer.alloc(32, 7).toString('base64');
+
 const request = async (base, path, options = {}) => {
   const response = await fetch(`${base}${path}`, { headers: { 'content-type': 'application/json' }, ...options });
   return { status: response.status, body: await response.json(), headers: response.headers };
@@ -114,6 +116,9 @@ test('project, preflight, run and dossier API work together', async t => {
 
   const approvalRejected = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, verdict: 'approve' }) });
   assert.equal(approvalRejected.status, 409);
+  const blockedGate = await authRequest(base, `/api/gates/${run.body.id}`);
+  assert.equal(blockedGate.body.status, 'blocked');
+  assert.equal(blockedGate.body.exitCode, 1);
 
   const audit = await authRequest(base, '/api/audit');
   assert.ok(audit.body.some(item => item.action === 'issue.exported'));
@@ -188,12 +193,17 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
 
 test('browser executor performs a real assertion and records screenshot evidence', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-browser-'));
-  const server = createApp({ storeFile: join(folder, 'store.json') });
+  let webhookAttempts = 0; let receivedWebhook;
+  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret, webhookRetryBaseMs: 0, webhookUrlValidator: async value => value, webhookSender: async input => { webhookAttempts += 1; if (webhookAttempts === 1) throw new Error('temporary outage'); receivedWebhook = input; return { status: 204 }; } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => server.close());
   const base = `http://127.0.0.1:${server.address().port}`;
   const cookie = await setupOwner(base);
   const authRequest = authenticatedRequest(cookie);
+
+  const webhook = await authRequest(base, '/api/webhooks', { method: 'POST', body: JSON.stringify({ name: '发布通知', url: 'https://hooks.example.test/release', events: ['release.decision'] }) });
+  assert.equal(webhook.status, 201);
+  assert.match(webhook.body.secret, /^whsec_/);
 
   const project = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '浏览器验收', repo: folder, url: `${base}/`, branch: 'main', handoffMode: 'file' }) });
   const contract = await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: project.body.id, code: 'PAGE-01', title: '页面标题可见', description: '首页显示 ShipWitness 产品名', steps: [{ action: 'goto', path: '/' }, { action: 'expectText', selector: 'body', value: 'ShipWitness' }] }) });
@@ -210,6 +220,39 @@ test('browser executor performs a real assertion and records screenshot evidence
   const approval = await authRequest(base, '/api/decisions', { method: 'POST', body: JSON.stringify({ runId: run.body.id, verdict: 'approve', note: '自动化证据完整' }) });
   assert.equal(approval.status, 201);
   assert.equal(approval.body.verdict, 'approve');
+  await server.processWebhookDeliveries();
+  let deliveries = await authRequest(base, '/api/webhook-deliveries');
+  assert.equal(deliveries.body[0].status, 'retrying');
+  await server.processWebhookDeliveries();
+  deliveries = await authRequest(base, '/api/webhook-deliveries');
+  assert.equal(deliveries.body[0].status, 'delivered');
+  assert.equal(deliveries.body[0].attempts, 2);
+  assert.equal(receivedWebhook.payload.data.verdict, 'approve');
+
+  const apiKey = await authRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: 'CI 发布门禁', scopes: ['gate:read', 'dossier:read'] }) });
+  assert.equal(apiKey.status, 201);
+  assert.match(apiKey.body.token, /^swk_/);
+  const machineRequest = (path, options = {}) => request(base, path, { ...options, headers: { authorization: `Bearer ${apiKey.body.token}`, ...options.headers } });
+  const gate = await machineRequest(`/api/gates/${run.body.id}`);
+  assert.equal(gate.status, 200);
+  assert.equal(gate.body.status, 'pass');
+  assert.equal(gate.body.exitCode, 0);
+  const forbiddenMachineSession = await machineRequest('/api/session');
+  assert.equal(forbiddenMachineSession.status, 403);
+
+  const signed = await authRequest(base, `/api/dossiers/${run.body.id}/sign`, { method: 'POST' });
+  assert.equal(signed.status, 201);
+  assert.equal(signed.body.signature.algorithm, 'Ed25519');
+  const signedRead = await machineRequest(`/api/signed-dossiers/${signed.body.id}`);
+  assert.equal(signedRead.status, 200);
+  assert.equal(signedRead.body.valid, true);
+  const revoked = await authRequest(base, `/api/api-keys/${apiKey.body.id}`, { method: 'DELETE' });
+  assert.equal(revoked.status, 200);
+  assert.ok(revoked.body.revokedAt);
+  assert.equal((await machineRequest(`/api/gates/${run.body.id}`)).status, 401);
+  const disabledWebhook = await authRequest(base, `/api/webhooks/${webhook.body.id}`, { method: 'DELETE' });
+  assert.equal(disabledWebhook.status, 200);
+  assert.equal(disabledWebhook.body.enabled, false);
 
   const screenshot = await fetch(`${base}${execution.body.execution.criteriaResults[0].screenshotUrl}`, { headers: { cookie } });
   assert.equal(screenshot.status, 200);

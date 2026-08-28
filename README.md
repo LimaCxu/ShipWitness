@@ -4,7 +4,7 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.3`。已具备真实浏览器验收、证据返工闭环、安全工作区、PostgreSQL 灾备、哈希链审计和外部返工交接。正式公网部署仍需 HTTPS 和完整安全审查。
+> 当前版本：`0.4.0-dev.4`。已具备真实浏览器验收、证据返工闭环、安全工作区、PostgreSQL 灾备、哈希链审计，以及可接入 CI/CD 的发布门禁和签名卷宗。正式公网部署仍需 HTTPS 和完整安全审查。
 
 ## 已实现
 
@@ -20,6 +20,9 @@ ShipWitness 是面向独立开发者和非技术产品负责人的开源发布�
 - 数据库与截图证据联合备份、SHA-256 校验和显式确认恢复
 - 工作区级哈希链审计、篡改检测和审批人发布决定
 - 结构化编码 Agent 交接包与显式触发的 GitHub Issue 导出
+- 权限受限且仅显示一次的机器 API Key、稳定退出码发布门禁 CLI
+- Ed25519 签名验收卷宗、离线验签 CLI 和加密私钥存储
+- HMAC 签名发布 Webhook、持久化投递队列和指数退避重试
 - 基础执行证据：仓库状态、HTTP 响应、页面标题、耗时和内容指纹
 - 真实浏览器步骤：同源打开、点击、输入、可见性、文字和网址断言
 - 浏览器证据：逐步结果、最终网址、网络响应摘要和完整页面截图
@@ -43,13 +46,13 @@ npm start
 
 ```bash
 cp .env.example .env
-# 编辑 .env，替换 POSTGRES_PASSWORD
+# 编辑 .env，替换 POSTGRES_PASSWORD 和 SHIPWITNESS_MASTER_KEY
 docker compose up --build
 ```
 
 数据库保存在 `shipwitness-postgres` 卷，截图证据保存在 `shipwitness-data` 卷。健康检查地址：`GET /api/health`，返回实际数据库引擎和连接状态。
 
-现有 JSON 数据迁移、备份、恢复和 HTTPS 部署要求见 [私有部署指南](docs/DEPLOYMENT.md)，Agent/GitHub 配置见 [交接与集成](docs/INTEGRATIONS.md)。
+现有 JSON 数据迁移、备份、恢复和 HTTPS 部署要求见 [私有部署指南](docs/DEPLOYMENT.md)，CI 门禁、签名卷宗和 Webhook 见 [发布自动化](docs/RELEASE_AUTOMATION.md)，Agent/GitHub 配置见 [交接与集成](docs/INTEGRATIONS.md)。
 
 ## 开发检查
 

@@ -4,11 +4,14 @@ import { dirname, extname, join, normalize, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { JsonStore, createId } from './lib/store.js';
 import { PostgresStore } from './lib/postgres-store.js';
 import { appendAudit, verifyAuditChain } from './lib/audit.js';
 import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
+import { evaluateReleaseGate } from './lib/release-gate.js';
+import { createSigningKey, decryptSecret, encryptSecret, signPayload, verifySignedPayload } from './lib/signing.js';
+import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
 
@@ -17,7 +20,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.3';
+const serviceVersion = '0.4.0-dev.4';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -56,6 +59,10 @@ const normalizedEmail = value => {
 
 const publicUser = user => ({ id: user.id, email: user.email, name: user.name, createdAt: user.createdAt });
 const sessionTokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
+const dossierPayload = (data, run, workspaceId) => {
+  const auditEvents = data.auditEvents.filter(item => item.workspaceId === workspaceId);
+  return { schema: 'shipwitness.dossier.v2', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id), auditProof: verifyAuditChain(auditEvents) };
+};
 
 async function checkRepository(repoPath) {
   try {
@@ -109,10 +116,32 @@ async function executeRun(project, run) {
   };
 }
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000 } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
+  const processWebhookDeliveries = async () => {
+    const snapshot = await store.read(); const now = new Date();
+    const due = snapshot.webhookDeliveries.filter(item => ['queued', 'retrying'].includes(item.status) && new Date(item.nextAttemptAt) <= now).slice(0, 10);
+    for (const candidate of due) {
+      const claimed = await store.update(data => {
+        const delivery = data.webhookDeliveries.find(item => item.id === candidate.id);
+        if (!delivery || !['queued', 'retrying'].includes(delivery.status) || new Date(delivery.nextAttemptAt) > new Date()) return null;
+        const webhook = data.webhooks.find(item => item.id === delivery.webhookId && item.enabled);
+        if (!webhook) { delivery.status = 'cancelled'; return null; }
+        delivery.status = 'sending'; delivery.attempts += 1; delivery.lastAttemptAt = new Date().toISOString(); return { delivery: { ...delivery }, webhook: { ...webhook } };
+      });
+      if (!claimed) continue;
+      try {
+        const response = await webhookSender({ url: claimed.webhook.url, secret: decryptSecret(claimed.webhook.encryptedSecret, signingSecret), event: claimed.delivery.event, deliveryId: claimed.delivery.id, payload: claimed.delivery.payload });
+        await store.update(data => { const delivery = data.webhookDeliveries.find(item => item.id === claimed.delivery.id); delivery.status = 'delivered'; delivery.deliveredAt = new Date().toISOString(); delivery.responseStatus = response.status; appendAudit(data, { workspaceId: delivery.workspaceId, action: 'webhook.delivered', entityType: 'webhook_delivery', entityId: delivery.id, details: { event: delivery.event, attempts: delivery.attempts }, at: delivery.deliveredAt }); });
+      } catch (error) {
+        await store.update(data => { const delivery = data.webhookDeliveries.find(item => item.id === claimed.delivery.id); delivery.lastError = String(error.message || '投递失败').slice(0, 300); delivery.status = delivery.attempts >= 6 ? 'failed' : 'retrying'; delivery.nextAttemptAt = new Date(Date.now() + Math.min(webhookRetryBaseMs * 2 ** (delivery.attempts - 1), 3_600_000)).toISOString(); if (delivery.status === 'failed') appendAudit(data, { workspaceId: delivery.workspaceId, action: 'webhook.failed', entityType: 'webhook_delivery', entityId: delivery.id, details: { event: delivery.event, attempts: delivery.attempts, error: delivery.lastError } }); });
+      }
+    }
+    return due.length;
+  };
+  const webhookTimer = setInterval(() => processWebhookDeliveries().catch(() => undefined), 10_000); webhookTimer.unref();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
@@ -166,20 +195,30 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
 
       const authData = await store.read();
-      const token = readSessionToken(req.headers.cookie);
-      const tokenHash = sessionTokenHash(token);
-      const session = authData.sessions.find(item => item.tokenHash === tokenHash && new Date(item.expiresAt) > new Date());
-      const currentUser = session && authData.users.find(item => item.id === session.userId);
-      const currentWorkspace = session && authData.workspaces.find(item => item.id === session.workspaceId);
-      const membership = session && authData.memberships.find(item => item.userId === session.userId && item.workspaceId === session.workspaceId);
-      if (url.pathname.startsWith('/api/') && !session) return json(res, 401, { error: '请先登录' });
-      if (req.method === 'GET' && url.pathname === '/api/session') return json(res, 200, { user: publicUser(currentUser), workspace: currentWorkspace, role: membership?.role });
+      const cookieToken = readSessionToken(req.headers.cookie);
+      const cookieTokenHash = sessionTokenHash(cookieToken);
+      const session = authData.sessions.find(item => item.tokenHash === cookieTokenHash && new Date(item.expiresAt) > new Date());
+      const bearer = String(req.headers.authorization || '').match(/^Bearer\s+(.+)$/i)?.[1];
+      const apiKey = bearer && authData.apiKeys.find(item => item.tokenHash === sessionTokenHash(bearer) && !item.revokedAt);
+      const actorUserId = session?.userId || apiKey?.createdByUserId;
+      const workspaceId = session?.workspaceId || apiKey?.workspaceId;
+      const currentUser = actorUserId && authData.users.find(item => item.id === actorUserId);
+      const currentWorkspace = workspaceId && authData.workspaces.find(item => item.id === workspaceId);
+      const membership = currentUser && authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === workspaceId);
+      if (url.pathname.startsWith('/api/') && !session && !apiKey) return json(res, 401, { error: '请先登录或提供 API Key' });
+      if (apiKey) {
+        const allowed = req.method === 'GET' && ((url.pathname.startsWith('/api/gates/') && apiKey.scopes.includes('gate:read')) || (url.pathname.startsWith('/api/dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/signed-dossiers/') && apiKey.scopes.includes('dossier:read')));
+        if (!allowed) return json(res, 403, { error: 'API Key 作用域不足' });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/session') {
+        if (!session) return json(res, 403, { error: 'API Key 不能读取交互会话' });
+        return json(res, 200, { user: publicUser(currentUser), workspace: currentWorkspace, role: membership?.role });
+      }
       if (req.method === 'POST' && url.pathname === '/api/logout') {
-        await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== tokenHash); appendAudit(data, { workspaceId: session.workspaceId, actorUserId: currentUser.id, action: 'user.logout', entityType: 'user', entityId: currentUser.id }); });
+        await store.update(data => { data.sessions = data.sessions.filter(item => item.tokenHash !== cookieTokenHash); appendAudit(data, { workspaceId: session.workspaceId, actorUserId: currentUser.id, action: 'user.logout', entityType: 'user', entityId: currentUser.id }); });
         return json(res, 200, { ok: true }, { 'set-cookie': clearSessionCookie(secureCookie) });
       }
 
-      const workspaceId = session?.workspaceId;
       const requireRole = roles => {
         if (!membership || !roles.includes(membership.role)) throw Object.assign(new Error('当前角色无权执行此操作'), { status: 403 });
       };
@@ -192,7 +231,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const workspace = await store.update(data => {
           const value = { id: createId('ws'), name: required(input.name, '工作区名称'), createdAt: now };
           data.workspaces.push(value); data.memberships.push({ id: createId('mem'), workspaceId: value.id, userId: currentUser.id, role: 'owner', createdAt: now });
-          const active = data.sessions.find(item => item.tokenHash === tokenHash); active.workspaceId = value.id;
+          const active = data.sessions.find(item => item.tokenHash === cookieTokenHash); active.workspaceId = value.id;
           appendAudit(data, { workspaceId: value.id, actorUserId: currentUser.id, action: 'workspace.created', entityType: 'workspace', entityId: value.id, at: now });
           return value;
         });
@@ -201,7 +240,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'workspaces' && segments[2] && segments[3] === 'select') {
         const targetMembership = authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === segments[2]);
         if (!targetMembership) return json(res, 404, { error: '工作区不存在' });
-        await store.update(data => { data.sessions.find(item => item.tokenHash === tokenHash).workspaceId = targetMembership.workspaceId; appendAudit(data, { workspaceId: targetMembership.workspaceId, actorUserId: currentUser.id, action: 'workspace.selected', entityType: 'workspace', entityId: targetMembership.workspaceId }); });
+        await store.update(data => { data.sessions.find(item => item.tokenHash === cookieTokenHash).workspaceId = targetMembership.workspaceId; appendAudit(data, { workspaceId: targetMembership.workspaceId, actorUserId: currentUser.id, action: 'workspace.selected', entityType: 'workspace', entityId: targetMembership.workspaceId }); });
         return json(res, 200, { workspace: authData.workspaces.find(item => item.id === targetMembership.workspaceId), role: targetMembership.role });
       }
       if (req.method === 'GET' && url.pathname === '/api/members') {
@@ -230,6 +269,64 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/audit/verify') {
         requireRole(['owner', 'approver']);
         return json(res, 200, verifyAuditChain(authData.auditEvents.filter(item => item.workspaceId === workspaceId)));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/api-keys') {
+        requireRole(['owner']);
+        return json(res, 200, authData.apiKeys.filter(item => item.workspaceId === workspaceId).map(({ tokenHash: hidden, ...item }) => item));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/api-keys') {
+        requireRole(['owner']);
+        const input = await body(req); const scopes = Array.isArray(input.scopes) ? [...new Set(input.scopes)] : ['gate:read']; const allowedScopes = ['gate:read', 'dossier:read'];
+        if (!scopes.length || scopes.some(scope => !allowedScopes.includes(scope))) return json(res, 400, { error: 'API Key 作用域无效' });
+        const secret = `swk_${randomBytes(32).toString('base64url')}`; const now = new Date().toISOString();
+        const created = await store.update(data => {
+          const item = { id: createId('key'), workspaceId, name: required(input.name, '名称'), tokenHash: sessionTokenHash(secret), tokenSuffix: secret.slice(-6), scopes, createdByUserId: currentUser.id, createdAt: now, lastUsedAt: null, revokedAt: null };
+          data.apiKeys.unshift(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'api_key.created', entityType: 'api_key', entityId: item.id, details: { name: item.name, scopes }, at: now }); return item;
+        });
+        const { tokenHash: hidden, ...safe } = created;
+        return json(res, 201, { ...safe, token: secret });
+      }
+      if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'api-keys' && segments[2]) {
+        requireRole(['owner']);
+        const revoked = await store.update(data => {
+          const item = data.apiKeys.find(key => key.id === segments[2] && key.workspaceId === workspaceId);
+          if (!item) throw Object.assign(new Error('API Key 不存在'), { status: 404 });
+          if (!item.revokedAt) {
+            item.revokedAt = new Date().toISOString();
+            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'api_key.revoked', entityType: 'api_key', entityId: item.id, details: { name: item.name }, at: item.revokedAt });
+          }
+          return item;
+        });
+        return json(res, 200, { id: revoked.id, revokedAt: revoked.revokedAt });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/webhooks') {
+        requireRole(['owner']);
+        return json(res, 200, authData.webhooks.filter(item => item.workspaceId === workspaceId).map(({ encryptedSecret: hidden, ...item }) => item));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/webhooks') {
+        requireRole(['owner']);
+        const input = await body(req); const events = Array.isArray(input.events) ? [...new Set(input.events)] : ['release.decision']; const allowedEvents = ['release.decision'];
+        if (!events.length || events.some(event => !allowedEvents.includes(event))) return json(res, 400, { error: 'Webhook 事件无效' });
+        const webhookUrl = await webhookUrlValidator(required(input.url, 'Webhook URL')); const secret = `whsec_${randomBytes(32).toString('base64url')}`; const now = new Date().toISOString();
+        const created = await store.update(data => { const item = { id: createId('wh'), workspaceId, name: required(input.name, '名称'), url: webhookUrl, events, encryptedSecret: encryptSecret(secret, signingSecret), enabled: true, createdByUserId: currentUser.id, createdAt: now }; data.webhooks.unshift(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'webhook.created', entityType: 'webhook', entityId: item.id, details: { name: item.name, events }, at: now }); return item; });
+        const { encryptedSecret: hidden, ...safe } = created; return json(res, 201, { ...safe, secret });
+      }
+      if (req.method === 'DELETE' && segments[0] === 'api' && segments[1] === 'webhooks' && segments[2]) {
+        requireRole(['owner']);
+        const disabled = await store.update(data => {
+          const item = data.webhooks.find(webhook => webhook.id === segments[2] && webhook.workspaceId === workspaceId);
+          if (!item) throw Object.assign(new Error('Webhook 不存在'), { status: 404 });
+          if (item.enabled) {
+            item.enabled = false; item.disabledAt = new Date().toISOString();
+            appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'webhook.disabled', entityType: 'webhook', entityId: item.id, details: { name: item.name }, at: item.disabledAt });
+          }
+          return item;
+        });
+        return json(res, 200, { id: disabled.id, enabled: disabled.enabled, disabledAt: disabled.disabledAt });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/webhook-deliveries') {
+        requireRole(['owner']);
+        return json(res, 200, authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100));
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') return json(res, 200, (await store.read()).projects.filter(item => item.workspaceId === workspaceId));
       if (req.method === 'POST' && url.pathname === '/api/projects') {
@@ -450,7 +547,13 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           if (verdict === 'approve' && run.execution?.verdict !== 'passed') throw Object.assign(new Error('只有证据裁决通过的任务才能批准发布'), { status: 409 });
           const note = String(input.note || '').trim();
           if (verdict === 'hold' && !note) throw Object.assign(new Error('暂不发布必须填写原因'), { status: 400 });
-          const value = { id: createId('decision'), workspaceId, runId, owner: currentUser.name, ownerUserId: currentUser.id, verdict, note, createdAt: new Date().toISOString() }; data.decisions.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'release.decision_recorded', entityType: 'decision', entityId: value.id, details: { runId, verdict: value.verdict }, at: value.createdAt }); return value;
+          const value = { id: createId('decision'), workspaceId, runId, owner: currentUser.name, ownerUserId: currentUser.id, verdict, note, createdAt: new Date().toISOString() };
+          data.decisions.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'release.decision_recorded', entityType: 'decision', entityId: value.id, details: { runId, verdict: value.verdict }, at: value.createdAt });
+          for (const webhook of data.webhooks.filter(item => item.workspaceId === workspaceId && item.enabled && item.events.includes('release.decision'))) {
+            const delivery = { id: createId('delivery'), workspaceId, webhookId: webhook.id, event: 'release.decision', payload: { schema: 'shipwitness.webhook.v1', event: 'release.decision', occurredAt: value.createdAt, data: { runId, decisionId: value.id, verdict, owner: value.owner } }, status: 'queued', attempts: 0, nextAttemptAt: value.createdAt, createdAt: value.createdAt };
+            data.webhookDeliveries.push(delivery); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'webhook.queued', entityType: 'webhook_delivery', entityId: delivery.id, details: { webhookId: webhook.id, event: delivery.event }, at: value.createdAt });
+          }
+          return value;
         });
         return json(res, 201, decision);
       }
@@ -458,12 +561,39 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const runId = url.searchParams.get('runId');
         return json(res, 200, authData.decisions.filter(item => item.workspaceId === workspaceId && (!runId || item.runId === runId)));
       }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'gates' && segments[2]) {
+        const run = authData.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        const gate = evaluateReleaseGate({ run, decisions: authData.decisions.filter(item => item.workspaceId === workspaceId && item.runId === segments[2]), auditEvents: authData.auditEvents.filter(item => item.workspaceId === workspaceId) });
+        if (apiKey) await store.update(data => { const key = data.apiKeys.find(item => item.id === apiKey.id); if (key) key.lastUsedAt = new Date().toISOString(); });
+        return json(res, run ? 200 : 404, gate);
+      }
+      if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'dossiers' && segments[2] && segments[3] === 'sign') {
+        requireRole(['owner', 'approver']);
+        const signed = await store.update(data => {
+          const run = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!run) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          const gate = evaluateReleaseGate({ run, decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id), auditEvents: data.auditEvents.filter(item => item.workspaceId === workspaceId) });
+          if (gate.status !== 'pass') throw Object.assign(new Error(`发布门禁未通过：${gate.reasons.join('；')}`), { status: 409 });
+          const workspace = data.workspaces.find(item => item.id === workspaceId); workspace.signingKey ||= createSigningKey(signingSecret);
+          const payload = { ...dossierPayload(data, run, workspaceId), gate, signedAt: new Date().toISOString() };
+          const document = { id: createId('sd'), schema: 'shipwitness.signed-dossier.v1', workspaceId, runId: run.id, payload, signature: signPayload(payload, workspace.signingKey, signingSecret), createdByUserId: currentUser.id, createdAt: payload.signedAt };
+          data.signedDossiers.unshift(document); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'dossier.signed', entityType: 'signed_dossier', entityId: document.id, details: { runId: run.id, algorithm: document.signature.algorithm }, at: document.createdAt }); return document;
+        });
+        return json(res, 201, signed);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/signed-dossiers') {
+        const runId = url.searchParams.get('runId');
+        return json(res, 200, authData.signedDossiers.filter(item => item.workspaceId === workspaceId && (!runId || item.runId === runId)).map(item => ({ id: item.id, runId: item.runId, createdAt: item.createdAt, algorithm: item.signature.algorithm })));
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'signed-dossiers' && segments[2]) {
+        const document = authData.signedDossiers.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        return document ? json(res, 200, { ...document, valid: verifySignedPayload(document.payload, document.signature) }) : json(res, 404, { error: '签名卷宗不存在' });
+      }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'dossiers' && segments[2]) {
         const data = await store.read();
         const run = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         if (!run) return json(res, 404, { error: '验收记录不存在' });
-        const workspaceAudit = data.auditEvents.filter(item => item.workspaceId === workspaceId);
-        return json(res, 200, { schema: 'shipwitness.dossier.v1', workspaceId, run, issues: data.issues.filter(item => item.workspaceId === workspaceId && item.runId === run.id), decisions: data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === run.id), auditProof: verifyAuditChain(workspaceAudit) });
+        return json(res, 200, dossierPayload(data, run, workspaceId));
       }
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'evidence' && segments[2] && segments[3] && segments.length === 4) {
         if (!authData.runs.some(item => item.id === segments[2] && item.workspaceId === workspaceId)) return json(res, 404, { error: '验收记录不存在' });
@@ -490,7 +620,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       json(res, error.status || 500, { error: error.status ? error.message : '服务器内部错误' });
     }
   });
-  server.closeStore = () => store.close?.();
+  server.processWebhookDeliveries = processWebhookDeliveries;
+  server.closeStore = async () => { clearInterval(webhookTimer); await store.close?.(); };
   return server;
 }
 

@@ -16,13 +16,14 @@ services:
 
   shipwitness:
     build: .
-    image: shipwitness:0.4.0-dev.3
+    image: shipwitness:0.4.0-dev.4
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://shipwitness:${POSTGRES_PASSWORD}@postgres:5432/shipwitness
       SHIPWITNESS_ARTIFACTS_DIR: /app/data/evidence
+      SHIPWITNESS_MASTER_KEY: ${SHIPWITNESS_MASTER_KEY:?Set SHIPWITNESS_MASTER_KEY in .env}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     ports:
       - "4173:4173"

@@ -5,12 +5,14 @@
 Use PostgreSQL mode for durable deployments. JSON mode remains available for local evaluation and migration only.
 
 1. Copy `.env.example` to `.env`.
-2. Replace `POSTGRES_PASSWORD` with a long, unique password.
+2. Replace `POSTGRES_PASSWORD` with a long, unique password. Generate `SHIPWITNESS_MASTER_KEY` once with `openssl rand -base64 32` and store it in the deployment secret store.
 3. Start the stack with `docker compose up -d --build`.
 4. Open `http://<host>:4173` and create the first owner account.
 5. Put ShipWitness behind an HTTPS reverse proxy before allowing network access. Preserve `X-Forwarded-Proto: https` so session cookies receive the `Secure` flag.
 
 `GET /api/health` returns the active storage engine and database readiness. The application container waits for PostgreSQL health before starting, and pending numbered SQL migrations run automatically under an advisory lock.
+
+The master key is not stored in PostgreSQL backups. Back it up separately and restrict access to the application process. Test restoration with the same key by verifying one existing signed dossier and delivering a test webhook.
 
 ## Migrate an existing JSON installation
 
