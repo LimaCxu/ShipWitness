@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.24
+
+- Published a machine-readable 1.x lifecycle policy through `GET /api/support`.
+- Added stable-release date and end-of-support validation to deployment readiness; development releases are now explicitly evaluation-only.
+- Strengthened external security-review evidence with a one-year freshness requirement instead of accepting an unqualified reference string.
+- Updated the internal end-to-end threat model for the extension API and signed GitHub inbound events.
+
 ## 0.4.0-dev.23
 
 - Added the versioned `/api/v1` extension surface for coding agents and CI clients.

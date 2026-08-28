@@ -1,11 +1,11 @@
 # Internal security review
 
-Status: completed for `0.4.0-dev.7`. This is a maintainer threat-model review, not an independent penetration test or certification.
+Status: updated for `0.4.0-dev.24`. This is a maintainer threat-model review, not an independent penetration test or certification.
 
 ## Trust boundaries
 
 - Browser users authenticate through HttpOnly, SameSite=Strict sessions and are restricted to their current workspace and role.
-- CI clients authenticate with hashed, workspace-scoped API keys limited to gate and dossier reads.
+- CI and coding-agent clients authenticate with hashed, workspace-scoped API keys split across acceptance read/write, gate read, and dossier read scopes.
 - PostgreSQL and the evidence volume contain sensitive customer data and must not be directly network-accessible.
 - `SHIPWITNESS_MASTER_KEY`, `GITHUB_TOKEN`, database credentials, API keys, and webhook secrets belong in a deployment secret manager.
 - Acceptance targets and Webhook receivers are untrusted network peers.
@@ -22,6 +22,8 @@ Status: completed for `0.4.0-dev.7`. This is a maintainer threat-model review, n
 | Secret storage | AES-256-GCM, canonical 32-byte key, transactional rotation | signing and operations tests |
 | Release integrity | Hash-chained audit, Ed25519 dossiers, checksummed release bundles | audit/signing/release tests |
 | Duplicate/stuck work | Serializable run claim and stale Webhook delivery lease recovery | concurrency and delivery tests |
+| Agent/API replay | Versioned machine API, scoped keys, transactional idempotency records, request-conflict rejection | extension API and PostgreSQL tests |
+| GitHub inbound events | Exact raw-body HMAC validation, delivery-ID replay protection, repository and branch matching | GitHub webhook tests |
 | Supply chain | Locked dependencies, minimal production install, high-severity `npm audit` CI gate | GitHub Actions CI |
 
 ## Residual risks before 1.0
@@ -35,4 +37,4 @@ Status: completed for `0.4.0-dev.7`. This is a maintainer threat-model review, n
 
 ## Release decision
 
-`0.4.0-dev.7` is suitable for controlled self-hosted evaluation behind HTTPS with restricted network access. It is not represented as independently audited, compliance-certified, or ready for unrestricted public SaaS exposure. These statements must remain visible until external review evidence exists.
+`0.4.0-dev.24` is suitable for controlled self-hosted evaluation behind HTTPS with restricted network access. It is explicitly marked evaluation-only by the support endpoint and readiness center. It is not represented as independently audited, compliance-certified, or ready for unrestricted public SaaS exposure. These statements must remain visible until a stable supported release and current external review evidence exist.

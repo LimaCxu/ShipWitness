@@ -612,6 +612,7 @@ test('readiness report is owner-only, conservative and never exposes configurati
   assert.equal(report.body.checks.find(item => item.id === 'postgres').status, 'block');
   assert.equal(report.body.checks.find(item => item.id === 'https').status, 'block');
   assert.equal(report.body.checks.find(item => item.id === 'master_key').status, 'block');
+  assert.equal(report.body.checks.find(item => item.id === 'support_lifecycle').status, 'warning');
   assert.match(report.body.checks.find(item => item.id === 'audit').detail, /^1 条审计事件哈希链完整。$/);
   assert.equal(JSON.stringify(report.body).includes(invalidSecret), false);
 
@@ -633,6 +634,10 @@ test('readiness report recognizes a fully configured production candidate', asyn
     allowedTargetOrigins: ['https://staging.example'],
     lastVerifiedBackupAt: new Date().toISOString(),
     securityReviewReference: 'independent-review-2026-08',
+    securityReviewedAt: new Date().toISOString(),
+    version: '1.0.0',
+    releasedAt: '2026-08-01T00:00:00Z',
+    endOfSupportAt: '2027-08-01T00:00:00Z',
     emailSender: async () => ({ messageId: 'test-message' }),
     emailConfiguration: { enabled: true }
   });
@@ -647,6 +652,8 @@ test('readiness report recognizes a fully configured production candidate', asyn
   assert.equal(report.body.verdict.blockers, 0);
   assert.equal(report.body.verdict.warnings, 0);
   assert.ok(report.body.checks.every(item => item.status === 'pass'));
+  const support = await request(base, '/api/support');
+  assert.equal(support.status, 200); assert.equal(support.body.schema, 'shipwitness.support-policy.v1'); assert.equal(support.body.currentRelease.status, 'supported');
 });
 
 test('authentication, roles and workspace isolation prevent cross-tenant access', async t => {

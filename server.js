@@ -18,13 +18,14 @@ import { createSmtpSender, smtpConfig } from './lib/email.js';
 import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-policy.js';
 import { checkBrowserAvailability, executeBrowserRun, normalizeSteps } from './lib/browser-executor.js';
 import { clearSessionCookie, createSessionToken, hashPassword, readSessionToken, sessionCookie, verifyPassword } from './lib/auth.js';
+import { releaseSupportStatus, supportPolicy } from './lib/support.js';
 
 const execFileAsync = promisify(execFile);
 const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.23';
+const serviceVersion = '0.4.0-dev.24';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -242,7 +243,7 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, githubRepositoryReader = readGitHubRepository, githubWebhookSecret = process.env.SHIPWITNESS_GITHUB_WEBHOOK_SECRET, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, securityReviewedAt = process.env.SHIPWITNESS_SECURITY_REVIEWED_AT, version = serviceVersion, releasedAt = process.env.SHIPWITNESS_RELEASED_AT, endOfSupportAt = process.env.SHIPWITNESS_END_OF_SUPPORT_AT, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
@@ -330,11 +331,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
 
       if (req.method === 'GET' && url.pathname === '/api/health') {
-        try { return json(res, 200, { ok: true, service: 'shipwitness', version: serviceVersion, uptimeSeconds: Math.round(process.uptime()), storage: await store.health() }); }
-        catch { return json(res, 503, { ok: false, service: 'shipwitness', version: serviceVersion, error: '存储当前不可用' }); }
+        try { return json(res, 200, { ok: true, service: 'shipwitness', version, uptimeSeconds: Math.round(process.uptime()), storage: await store.health() }); }
+        catch { return json(res, 503, { ok: false, service: 'shipwitness', version, error: '存储当前不可用' }); }
       }
+      if (req.method === 'GET' && url.pathname === '/api/support') return json(res, 200, { ...supportPolicy, currentRelease: releaseSupportStatus({ version, releasedAt, endOfSupportAt }) });
       if (req.method === 'GET' && requestedPath === '/api/v1') return json(res, 200, {
-        name: 'ShipWitness Extension API', version: 'v1', serviceVersion,
+        name: 'ShipWitness Extension API', version: 'v1', serviceVersion: version,
         authentication: 'Bearer API Key',
         scopes: ['acceptance:read', 'acceptance:write', 'gate:read', 'dossier:read'],
         resources: ['/api/v1/projects', '/api/v1/runs', '/api/v1/runs/:id', '/api/v1/runs/:id/execute', '/api/v1/runs/:id/retry', '/api/v1/dossiers/:runId', '/api/v1/gates/:runId']
@@ -605,7 +607,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         requireRole(['owner', 'approver']);
         const now = Date.now(); const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const deliveries = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId);
         return json(res, 200, {
-          version: serviceVersion, storage: await store.health(), audit: verifyAuditChain(workspaceAudit),
+          version, storage: await store.health(), audit: verifyAuditChain(workspaceAudit),
           members: authData.memberships.filter(item => item.workspaceId === workspaceId).length,
           runs: { queued: workspaceRuns.filter(item => item.status === 'queued').length, running: workspaceRuns.filter(item => item.status === 'running').length, failed: workspaceRuns.filter(item => item.status === 'failed').length, stale: workspaceRuns.filter(item => item.status === 'running' && now - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length },
           webhooks: { pending: deliveries.filter(item => ['queued', 'retrying', 'sending'].includes(item.status)).length, failed: deliveries.filter(item => item.status === 'failed').length },
@@ -618,6 +620,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         let masterKeyValid = false; try { keyFromSecret(signingSecret); masterKeyValid = true; } catch {}
         const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
         const backupTime = lastVerifiedBackupAt ? new Date(lastVerifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
+        const reviewTime = securityReviewedAt ? new Date(securityReviewedAt) : null; const reviewAgeDays = reviewTime ? (now.getTime() - reviewTime.getTime()) / 86_400_000 : null; const securityReviewFresh = Boolean(securityReviewReference && Number.isFinite(reviewAgeDays) && reviewAgeDays >= -0.1 && reviewAgeDays <= 365);
+        const releaseSupport = releaseSupportStatus({ version, releasedAt, endOfSupportAt, now });
         const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
         const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
         const githubProjects = authData.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt && item.githubRepo).length;
@@ -627,7 +631,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
           { id: 'audit', category: '证据治理', label: '审计链完整性', status: audit.valid ? 'pass' : 'block', detail: audit.valid ? `${audit.checked} 条审计事件哈希链完整。` : `审计链异常：${audit.brokenEventId ? `事件 ${audit.brokenEventId}` : '完整性校验失败'}`, action: audit.valid ? null : '停止发布并调查审计链异常' },
           { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
-          { id: 'security_review', category: '访问安全', label: '外部安全评审', status: securityReviewReference ? 'pass' : 'warning', detail: securityReviewReference ? '部署环境已登记外部安全评审参考。' : '尚未登记独立安全评审结果。', action: securityReviewReference ? null : '完成独立安全评审并配置 SHIPWITNESS_SECURITY_REVIEW_REFERENCE' },
+          { id: 'security_review', category: '访问安全', label: '一年内外部安全评审', status: securityReviewFresh ? 'pass' : 'warning', detail: securityReviewFresh ? `独立安全评审距今 ${reviewAgeDays.toFixed(0)} 天，参考编号已登记。` : securityReviewReference ? '已登记评审参考，但评审日期缺失、无效或超过一年。' : '尚未登记独立安全评审结果。', action: securityReviewFresh ? null : '完成独立安全评审，并配置参考编号与 SHIPWITNESS_SECURITY_REVIEWED_AT' },
+          { id: 'support_lifecycle', category: '版本治理', label: '版本支持周期', status: releaseSupport.status === 'supported' ? 'pass' : releaseSupport.channel === 'stable' ? 'block' : 'warning', detail: releaseSupport.reason, action: releaseSupport.status === 'supported' ? null : releaseSupport.channel === 'stable' ? '升级到仍在支持周期内的稳定版本' : '正式公网发布前升级到带发布日期和停止支持日期的 1.x 稳定版本' },
           { id: 'email', category: '通知送达', label: '邮件通知', status: emailEnabled && emailFailures === 0 ? 'pass' : 'warning', detail: !emailEnabled ? 'SMTP 未启用，邀请、失败和审批需要成员主动查看。' : emailFailures ? `${emailFailures} 封邮件最终投递失败。` : 'SMTP 已启用且没有最终失败投递。', action: !emailEnabled ? '配置 TLS SMTP 并发送测试邮件' : emailFailures ? '处理失败邮件并重试' : null },
           { id: 'github_webhook', category: '代码证据', label: 'GitHub 自动同步', status: !githubProjects || githubWebhookSecret ? 'pass' : 'warning', detail: !githubProjects ? '当前没有项目启用 GitHub 集成。' : githubWebhookSecret ? `${githubProjects} 个 GitHub 项目已启用签名事件接收。` : `${githubProjects} 个 GitHub 项目仍依赖人工同步。`, action: githubProjects && !githubWebhookSecret ? '配置 SHIPWITNESS_GITHUB_WEBHOOK_SECRET 并在仓库订阅事件' : null },
           { id: 'operations', category: '运行健康', label: '任务与 Webhook', status: staleRuns || webhookFailures ? 'warning' : 'pass', detail: staleRuns || webhookFailures ? `${staleRuns} 个超时任务，${webhookFailures} 个 Webhook 最终失败。` : '没有超时任务或最终失败 Webhook。', action: staleRuns || webhookFailures ? '在告警中心确认并处理异常' : null },
@@ -636,7 +641,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const blockers = checks.filter(item => item.status === 'block').length; const warnings = checks.filter(item => item.status === 'warning').length;
         const level = blockers ? 'local_only' : warnings ? 'pilot_ready' : 'production_candidate';
         const labels = { local_only: '仅限本地或开发环境', pilot_ready: '可进入受控试点', production_candidate: '具备公网候选条件' };
-        return json(res, 200, { schema: 'shipwitness.readiness.v1', version: serviceVersion, generatedAt: now.toISOString(), verdict: { level, label: labels[level], blockers, warnings, passed: checks.length - blockers - warnings }, checks });
+        return json(res, 200, { schema: 'shipwitness.readiness.v1', version, generatedAt: now.toISOString(), verdict: { level, label: labels[level], blockers, warnings, passed: checks.length - blockers - warnings }, checks });
       }
       if (req.method === 'POST' && url.pathname === '/api/alerts/refresh') {
         requireRole(['owner', 'approver']);

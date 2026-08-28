@@ -22,6 +22,17 @@ For GitHub automatic synchronization, generate a separate random Webhook secret,
 
 `GET /api/health` returns the active storage engine and database readiness. The application container waits for PostgreSQL health before starting, and pending numbered SQL migrations run automatically under an advisory lock.
 
+Before requesting a public-production decision, record the independent review evidence and stable-release lifecycle metadata:
+
+```bash
+SHIPWITNESS_SECURITY_REVIEW_REFERENCE='SEC-2026-001'
+SHIPWITNESS_SECURITY_REVIEWED_AT='2026-08-28T00:00:00Z'
+SHIPWITNESS_RELEASED_AT='2026-08-28T00:00:00Z'
+SHIPWITNESS_END_OF_SUPPORT_AT='2027-08-28T00:00:00Z'
+```
+
+The review date must be no more than one year old. Release dates apply only to stable semantic versions such as `1.0.0`; a development build remains evaluation-only. Confirm the effective state through `GET /api/support` and the owner-only readiness center.
+
 The master key is not stored in PostgreSQL backups. Back it up separately and restrict access to the application process. Test restoration with the same key by verifying one existing signed dossier and delivering a test webhook.
 
 ## Migrate an existing JSON installation

@@ -43,7 +43,7 @@
 - [x] Exact-version Compose rollback orchestration with health confirmation
 - [x] Internal threat-model review and pre-1.0 compatibility contract
 - Independent penetration test and published remediation evidence
-- Supported 1.0 lifecycle and end-of-support policy
+- [x] Supported 1.0 lifecycle, machine-readable support status, and end-of-support enforcement
 - [x] Backup manifest, integrity verification, and restore drill tooling
 - [x] Stable versioned extension API for coding-agent task submission, execution, evidence reads, and idempotent retries
-- End-to-end security review and deployment guide
+- [x] End-to-end maintainer security review and deployment guide (independent test remains a separate gate)
