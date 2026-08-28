@@ -282,6 +282,36 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   const resolvedAlerts = await authRequest(base, '/api/alerts/refresh', { method: 'POST' });
   assert.equal(resolvedAlerts.body.find(item => item.id === failedRunAlert.id).status, 'resolved');
 
+  const retention = await authRequest(base, '/api/retention', { method: 'PUT', body: JSON.stringify({ operationalDays: 30 }) });
+  assert.equal(retention.status, 200);
+  const old = new Date(Date.now() - 40 * 86400_000).toISOString();
+  await store.update(data => {
+    data.sessions.push({ id: 'ses_expired_cleanup', workspaceId: originalWorkspaceId, userId: 'usr_old', expiresAt: old, createdAt: old });
+    data.webhookDeliveries.push({ id: 'delivery_cleanup', workspaceId: originalWorkspaceId, status: 'delivered', deliveredAt: old, createdAt: old });
+    data.alerts.push({ id: 'alert_cleanup', workspaceId: originalWorkspaceId, sourceKey: 'historical.test', status: 'resolved', resolvedAt: old, createdAt: old });
+  });
+  const preview = await authRequest(base, '/api/retention/preview');
+  assert.equal(preview.body.total, 3);
+  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, alerts: 1 });
+  assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: 'wrong' }) })).status, 409);
+  await store.update(data => { data.sessions.find(item => item.id === 'ses_expired_cleanup').id = 'ses_expired_replaced'; });
+  assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: preview.body.token }) })).status, 409);
+  const refreshedPreview = await authRequest(base, '/api/retention/preview');
+  const cleaned = await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: refreshedPreview.body.asOf, token: refreshedPreview.body.token }) });
+  assert.equal(cleaned.body.total, 3);
+  assert.equal((await authRequest(base, '/api/retention/preview')).body.total, 0);
+
+  const auditExport = await authRequest(base, '/api/audit-exports', { method: 'POST' });
+  assert.equal(auditExport.status, 201);
+  assert.ok(auditExport.body.eventCount > 0);
+  const auditDownload = await fetch(`${base}${auditExport.body.downloadUrl}`, { headers: { cookie } });
+  assert.equal(auditDownload.status, 200);
+  assert.match(auditDownload.headers.get('content-disposition'), /attachment/);
+  const auditDocument = await auditDownload.json();
+  assert.equal(auditDocument.schema, 'shipwitness.audit-export.v1');
+  assert.equal(auditDocument.integrity.valid, true);
+  assert.equal(auditDocument.events.length, auditExport.body.eventCount);
+
   const removed = await authRequest(base, `/api/members/${member.body.membershipId}`, { method: 'DELETE' });
   assert.equal(removed.status, 200);
   assert.equal(removed.body.revokedApiKeys, 2);
@@ -296,6 +326,9 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.opened'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.acknowledged'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'alert.resolved'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'retention.updated'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'retention.cleaned'));
+  assert.ok(auditAfterLifecycle.body.some(item => item.action === 'audit.exported'));
   assert.ok(auditAfterLifecycle.body.some(item => item.action === 'member.removed'));
 });
 

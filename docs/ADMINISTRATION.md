@@ -26,3 +26,7 @@ Owners and approvers see live workspace counts for queued, running, failed, and 
 ## Alert lifecycle
 
 Opening the management panel refreshes persisted workspace alerts. ShipWitness raises alerts for audit-chain damage, acceptance runs stuck for more than 15 minutes, failed acceptance runs, and Webhook deliveries that exhausted retries. Owners and approvers can acknowledge an alert; every transition is appended to the audit chain. An active condition cannot be marked resolved manually. After the underlying condition disappears, the next refresh resolves the alert automatically and preserves it in history.
+
+## Audit export and retention
+
+Owners and approvers can generate and download immutable audit snapshots under **合规与数据治理**. Owners can additionally configure and preview operational-data retention before confirming cleanup. The product deliberately excludes acceptance evidence and audit history from automatic deletion. See [DATA_RETENTION.md](DATA_RETENTION.md) for the exact boundary and safe operating procedure.

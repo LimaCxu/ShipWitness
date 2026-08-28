@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.10
+
+- Added immutable, integrity-bearing audit export snapshots with controlled downloads.
+- Added owner-configurable operational-data retention and token-bound cleanup previews.
+- Preserved audit events, acceptance records, evidence, decisions, and signed dossiers from automatic cleanup.
+
 ## 0.4.0-dev.9
 
 - Added owner-controlled member password reset, global session revocation, and mandatory temporary-password replacement.

@@ -21,7 +21,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.9';
+const serviceVersion = '0.4.0-dev.10';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -150,6 +150,20 @@ const refreshAlerts = (data, workspaceId, actorUserId) => {
     appendAudit(data, { workspaceId, actorUserId, action: 'alert.resolved', entityType: 'alert', entityId: alert.id, details: { sourceKey: alert.sourceKey, automatic: true }, at: now });
   }
   return data.alerts.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+};
+
+const retentionPreview = (data, workspaceId, asOf = new Date()) => {
+  const workspace = data.workspaces.find(item => item.id === workspaceId);
+  const operationalDays = workspace?.retention?.operationalDays || 90;
+  const cutoff = new Date(asOf.getTime() - operationalDays * 86400_000);
+  const sessions = data.sessions.filter(item => item.workspaceId === workspaceId && new Date(item.expiresAt) < cutoff);
+  const webhookDeliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
+  const alerts = data.alerts.filter(item => item.workspaceId === workspaceId && item.status === 'resolved' && new Date(item.resolvedAt || item.createdAt) < cutoff);
+  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, alerts: alerts.length };
+  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort() };
+  const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+  const token = createHash('sha256').update(JSON.stringify({ workspaceId, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, ids })).digest('hex');
+  return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
 export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
@@ -403,6 +417,65 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && url.pathname === '/api/audit/verify') {
         requireRole(['owner', 'approver']);
         return json(res, 200, verifyAuditChain(authData.auditEvents.filter(item => item.workspaceId === workspaceId)));
+      }
+      if (req.method === 'POST' && url.pathname === '/api/audit-exports') {
+        requireRole(['owner', 'approver']);
+        const created = await store.update(data => {
+          const events = data.auditEvents.filter(item => item.workspaceId === workspaceId).sort((a, b) => a.sequence - b.sequence);
+          const workspace = data.workspaces.find(item => item.id === workspaceId); const now = new Date().toISOString();
+          const actors = Object.fromEntries([...new Set(events.map(item => item.actorUserId).filter(Boolean))].map(id => { const user = data.users.find(item => item.id === id); return [id, user ? publicUser(user) : { id, name: '未知用户', email: '' }]; }));
+          const document = { schema: 'shipwitness.audit-export.v1', workspace: { id: workspace.id, name: workspace.name }, generatedAt: now, generatedByUserId: currentUser.id, integrity: verifyAuditChain(events), actors, events };
+          const item = { id: createId('aex'), workspaceId, createdByUserId: currentUser.id, createdAt: now, eventCount: events.length, headHash: document.integrity.headHash, document };
+          data.auditExports.unshift(item); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'audit.exported', entityType: 'audit_export', entityId: item.id, details: { eventCount: item.eventCount, headHash: item.headHash }, at: now }); return item;
+        });
+        return json(res, 201, { id: created.id, createdAt: created.createdAt, eventCount: created.eventCount, headHash: created.headHash, downloadUrl: `/api/audit-exports/${created.id}/download` });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/audit-exports') {
+        requireRole(['owner', 'approver']);
+        return json(res, 200, authData.auditExports.filter(item => item.workspaceId === workspaceId).map(({ document: hidden, ...item }) => ({ ...item, downloadUrl: `/api/audit-exports/${item.id}/download` })));
+      }
+      if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'audit-exports' && segments[2] && segments[3] === 'download') {
+        requireRole(['owner', 'approver']);
+        const item = authData.auditExports.find(value => value.id === segments[2] && value.workspaceId === workspaceId);
+        if (!item) return json(res, 404, { error: '审计导出不存在' });
+        const content = `${JSON.stringify(item.document, null, 2)}\n`;
+        res.writeHead(200, { ...securityHeaders, 'content-type': 'application/json; charset=utf-8', 'content-disposition': `attachment; filename="shipwitness-audit-${item.id}.json"`, 'cache-control': 'no-store' });
+        return res.end(content);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/retention') {
+        requireRole(['owner']);
+        return json(res, 200, { operationalDays: currentWorkspace.retention?.operationalDays || 90, immutable: ['auditEvents', 'runs', 'issues', 'decisions', 'signedDossiers', 'evidence'] });
+      }
+      if (req.method === 'PUT' && url.pathname === '/api/retention') {
+        requireRole(['owner']);
+        const input = await body(req); const operationalDays = Number(input.operationalDays);
+        if (!Number.isInteger(operationalDays) || operationalDays < 30 || operationalDays > 730) return json(res, 400, { error: '运营数据保留天数必须是 30 到 730 的整数' });
+        const policy = await store.update(data => {
+          const workspace = data.workspaces.find(item => item.id === workspaceId); const previous = workspace.retention?.operationalDays || 90; const now = new Date().toISOString();
+          workspace.retention = { operationalDays, updatedAt: now, updatedByUserId: currentUser.id };
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.updated', entityType: 'workspace', entityId: workspaceId, details: { previousOperationalDays: previous, operationalDays }, at: now }); return workspace.retention;
+        });
+        return json(res, 200, policy);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/retention/preview') {
+        requireRole(['owner']);
+        const preview = retentionPreview(authData, workspaceId);
+        const { ids: hidden, ...safe } = preview; return json(res, 200, safe);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/retention/cleanup') {
+        requireRole(['owner']);
+        const input = await body(req); const asOf = new Date(input.asOf);
+        if (!Number.isFinite(asOf.getTime()) || Math.abs(Date.now() - asOf.getTime()) > 10 * 60_000) return json(res, 400, { error: '清理预览已过期，请重新预览' });
+        const result = await store.update(data => {
+          const preview = retentionPreview(data, workspaceId, asOf);
+          if (input.token !== preview.token) throw Object.assign(new Error('数据已经变化，请重新预览后再清理'), { status: 409 });
+          if (!preview.total) throw Object.assign(new Error('没有符合条件的运营数据'), { status: 409 });
+          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const alertIds = new Set(preview.ids.alerts);
+          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id));
+          const now = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.cleaned', entityType: 'workspace', entityId: workspaceId, details: { cutoff: preview.cutoff, counts: preview.counts, total: preview.total }, at: now });
+          return { cleanedAt: now, cutoff: preview.cutoff, counts: preview.counts, total: preview.total };
+        });
+        return json(res, 200, result);
       }
       if (req.method === 'GET' && url.pathname === '/api/api-keys') {
         requireRole(['owner']);
