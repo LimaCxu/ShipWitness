@@ -24,7 +24,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.22';
+const serviceVersion = '0.4.0-dev.23';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -232,10 +232,11 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   const webhookDeliveries = data.webhookDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
   const emailDeliveries = data.emailDeliveries.filter(item => item.workspaceId === workspaceId && ['delivered', 'failed', 'cancelled'].includes(item.status) && new Date(item.deliveredAt || item.lastAttemptAt || item.createdAt) < cutoff);
   const githubDeliveries = data.githubDeliveries.filter(item => item.workspaceIds?.length === 1 && item.workspaceIds[0] === workspaceId && ['synced', 'failed', 'ignored'].includes(item.status) && new Date(item.updatedAt || item.receivedAt) < cutoff);
+  const idempotencyRecords = data.idempotencyRecords.filter(item => item.workspaceId === workspaceId && new Date(item.createdAt) < cutoff);
   const alerts = data.alerts.filter(item => item.workspaceId === workspaceId && item.status === 'resolved' && new Date(item.resolvedAt || item.createdAt) < cutoff);
   const invitations = data.invitations.filter(item => item.workspaceId === workspaceId && (item.acceptedAt || item.revokedAt || new Date(item.expiresAt) <= asOf) && new Date(item.acceptedAt || item.revokedAt || item.expiresAt) < cutoff);
-  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, emailDeliveries: emailDeliveries.length, githubDeliveries: githubDeliveries.length, alerts: alerts.length, invitations: invitations.length };
-  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), emailDeliveries: emailDeliveries.map(item => item.id).sort(), githubDeliveries: githubDeliveries.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
+  const counts = { sessions: sessions.length, webhookDeliveries: webhookDeliveries.length, emailDeliveries: emailDeliveries.length, githubDeliveries: githubDeliveries.length, idempotencyRecords: idempotencyRecords.length, alerts: alerts.length, invitations: invitations.length };
+  const ids = { sessions: sessions.map(item => item.id).sort(), webhookDeliveries: webhookDeliveries.map(item => item.id).sort(), emailDeliveries: emailDeliveries.map(item => item.id).sort(), githubDeliveries: githubDeliveries.map(item => item.id).sort(), idempotencyRecords: idempotencyRecords.map(item => item.id).sort(), alerts: alerts.map(item => item.id).sort(), invitations: invitations.map(item => item.id).sort() };
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
   const token = createHash('sha256').update(JSON.stringify({ workspaceId, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, ids })).digest('hex');
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
@@ -314,6 +315,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
+      const requestedPath = url.pathname;
+      const versionedApi = requestedPath === '/api/v1' || requestedPath.startsWith('/api/v1/');
+      if (versionedApi) {
+        res.setHeader('x-shipwitness-api-version', 'v1');
+        url.pathname = requestedPath.replace(/^\/api\/v1(?=\/|$)/, '/api');
+      }
       const segments = url.pathname.split('/').filter(Boolean);
       const secureCookie = req.headers['x-forwarded-proto'] === 'https';
 
@@ -326,6 +333,12 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         try { return json(res, 200, { ok: true, service: 'shipwitness', version: serviceVersion, uptimeSeconds: Math.round(process.uptime()), storage: await store.health() }); }
         catch { return json(res, 503, { ok: false, service: 'shipwitness', version: serviceVersion, error: '存储当前不可用' }); }
       }
+      if (req.method === 'GET' && requestedPath === '/api/v1') return json(res, 200, {
+        name: 'ShipWitness Extension API', version: 'v1', serviceVersion,
+        authentication: 'Bearer API Key',
+        scopes: ['acceptance:read', 'acceptance:write', 'gate:read', 'dossier:read'],
+        resources: ['/api/v1/projects', '/api/v1/runs', '/api/v1/runs/:id', '/api/v1/runs/:id/execute', '/api/v1/runs/:id/retry', '/api/v1/dossiers/:runId', '/api/v1/gates/:runId']
+      });
       if (req.method === 'GET' && url.pathname === '/api/setup/status') {
         const data = await store.read();
         return json(res, 200, { needsSetup: !data.users.length });
@@ -427,8 +440,11 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       const membership = currentUser && authData.memberships.find(item => item.userId === currentUser.id && item.workspaceId === workspaceId);
       if (url.pathname.startsWith('/api/') && !session && !apiKey) return json(res, 401, { error: '请先登录或提供 API Key' });
       if (apiKey) {
-        const allowed = req.method === 'GET' && ((url.pathname.startsWith('/api/gates/') && apiKey.scopes.includes('gate:read')) || (url.pathname.startsWith('/api/dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/signed-dossiers/') && apiKey.scopes.includes('dossier:read')));
+        const acceptanceRead = versionedApi && req.method === 'GET' && ['/api/projects', '/api/runs', '/api/issues'].some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)) && apiKey.scopes.includes('acceptance:read');
+        const acceptanceWrite = versionedApi && req.method === 'POST' && (url.pathname === '/api/runs' || /^\/api\/runs\/[^/]+\/(execute|retry)$/.test(url.pathname)) && apiKey.scopes.includes('acceptance:write');
+        const allowed = acceptanceRead || acceptanceWrite || (req.method === 'GET' && ((url.pathname.startsWith('/api/gates/') && apiKey.scopes.includes('gate:read')) || (url.pathname.startsWith('/api/dossiers/') && apiKey.scopes.includes('dossier:read')) || (url.pathname.startsWith('/api/signed-dossiers/') && apiKey.scopes.includes('dossier:read'))));
         if (!allowed) return json(res, 403, { error: 'API Key 作用域不足' });
+        await store.update(data => { const key = data.apiKeys.find(item => item.id === apiKey.id); if (key) key.lastUsedAt = new Date().toISOString(); });
       }
       if (req.method === 'GET' && url.pathname === '/api/session') {
         if (!session) return json(res, 403, { error: 'API Key 不能读取交互会话' });
@@ -712,8 +728,8 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           const preview = retentionPreview(data, workspaceId, asOf);
           if (input.token !== preview.token) throw Object.assign(new Error('数据已经变化，请重新预览后再清理'), { status: 409 });
           if (!preview.total) throw Object.assign(new Error('没有符合条件的运营数据'), { status: 409 });
-          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const emailDeliveryIds = new Set(preview.ids.emailDeliveries); const githubDeliveryIds = new Set(preview.ids.githubDeliveries); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
-          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.emailDeliveries = data.emailDeliveries.filter(item => !emailDeliveryIds.has(item.id)); data.githubDeliveries = data.githubDeliveries.filter(item => !githubDeliveryIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
+          const sessionIds = new Set(preview.ids.sessions); const deliveryIds = new Set(preview.ids.webhookDeliveries); const emailDeliveryIds = new Set(preview.ids.emailDeliveries); const githubDeliveryIds = new Set(preview.ids.githubDeliveries); const idempotencyRecordIds = new Set(preview.ids.idempotencyRecords); const alertIds = new Set(preview.ids.alerts); const invitationIds = new Set(preview.ids.invitations);
+          data.sessions = data.sessions.filter(item => !sessionIds.has(item.id)); data.webhookDeliveries = data.webhookDeliveries.filter(item => !deliveryIds.has(item.id)); data.emailDeliveries = data.emailDeliveries.filter(item => !emailDeliveryIds.has(item.id)); data.githubDeliveries = data.githubDeliveries.filter(item => !githubDeliveryIds.has(item.id)); data.idempotencyRecords = data.idempotencyRecords.filter(item => !idempotencyRecordIds.has(item.id)); data.alerts = data.alerts.filter(item => !alertIds.has(item.id)); data.invitations = data.invitations.filter(item => !invitationIds.has(item.id));
           const now = new Date().toISOString(); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'retention.cleaned', entityType: 'workspace', entityId: workspaceId, details: { cutoff: preview.cutoff, counts: preview.counts, total: preview.total }, at: now });
           return { cleanedAt: now, cutoff: preview.cutoff, counts: preview.counts, total: preview.total };
         });
@@ -725,7 +741,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'POST' && url.pathname === '/api/api-keys') {
         requireRole(['owner']);
-        const input = await body(req); const scopes = Array.isArray(input.scopes) ? [...new Set(input.scopes)] : ['gate:read']; const allowedScopes = ['gate:read', 'dossier:read'];
+        const input = await body(req); const scopes = Array.isArray(input.scopes) ? [...new Set(input.scopes)] : ['gate:read']; const allowedScopes = ['gate:read', 'dossier:read', 'acceptance:read', 'acceptance:write'];
         if (!scopes.length || scopes.some(scope => !allowedScopes.includes(scope))) return json(res, 400, { error: 'API Key 作用域无效' });
         const secret = `swk_${randomBytes(32).toString('base64url')}`; const now = new Date().toISOString();
         const created = await store.update(data => {
@@ -1035,16 +1051,30 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'POST' && url.pathname === '/api/runs') {
         const input = await body(req);
-        const run = await store.update(data => {
+        const idempotencyKey = String(req.headers['idempotency-key'] || '');
+        if (versionedApi && apiKey && !/^[A-Za-z0-9._:-]{8,200}$/.test(idempotencyKey)) return json(res, 400, { error: '机器调用创建任务时必须提供 8-200 位 Idempotency-Key' });
+        const requestHash = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+        const created = await store.update(data => {
+          if (versionedApi && apiKey) {
+            const existing = data.idempotencyRecords.find(item => item.workspaceId === workspaceId && item.apiKeyId === apiKey.id && item.operation === 'run.create' && item.key === idempotencyKey);
+            if (existing) {
+              if (existing.requestHash !== requestHash) throw Object.assign(new Error('同一个 Idempotency-Key 不能用于不同请求'), { status: 409 });
+              const run = data.runs.find(item => item.id === existing.entityId && item.workspaceId === workspaceId);
+              if (!run) throw Object.assign(new Error('幂等记录关联的验收任务不存在'), { status: 409 });
+              return { run, replayed: true };
+            }
+          }
           const project = data.projects.find(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt);
           if (!project) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
           const value = { id: createId('run'), workspaceId, projectId: input.projectId, requirement: required(input.requirement, '原始需求'), criteria, repositorySnapshot: project.repositoryStatus ? structuredClone(project.repositoryStatus) : null, status: 'queued', attemptNumber: 1, createdAt: new Date().toISOString() };
-          data.runs.unshift(value); appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.created', entityType: 'run', entityId: value.id, details: { criteriaCount: criteria.length }, at: value.createdAt }); return value;
+          data.runs.unshift(value);
+          if (versionedApi && apiKey) data.idempotencyRecords.unshift({ id: createId('idem'), workspaceId, apiKeyId: apiKey.id, operation: 'run.create', key: idempotencyKey, requestHash, entityId: value.id, createdAt: value.createdAt });
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'run.created', entityType: 'run', entityId: value.id, details: { criteriaCount: criteria.length, source: versionedApi ? 'extension_api_v1' : 'web' }, at: value.createdAt }); return { run: value, replayed: false };
         });
-        return json(res, 201, run);
+        return json(res, created.replayed ? 200 : 201, created.run, created.replayed ? { 'idempotent-replayed': 'true' } : {});
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'runs' && segments[2] && segments[3] === 'retry') {
         const retried = await store.update(data => {
@@ -1233,7 +1263,6 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'GET' && segments[0] === 'api' && segments[1] === 'gates' && segments[2]) {
         const run = authData.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
         const gate = evaluateReleaseGate({ run, decisions: authData.decisions.filter(item => item.workspaceId === workspaceId && item.runId === segments[2]), auditEvents: authData.auditEvents.filter(item => item.workspaceId === workspaceId) });
-        if (apiKey) await store.update(data => { const key = data.apiKeys.find(item => item.id === apiKey.id); if (key) key.lastUsedAt = new Date().toISOString(); });
         return json(res, run ? 200 : 404, gate);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'dossiers' && segments[2] && segments[3] === 'sign') {

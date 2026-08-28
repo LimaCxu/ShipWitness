@@ -4,10 +4,11 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.22`。已具备 GitHub push/CI 事件自动同步、签名校验与防重放、验收任务提交快照、管理员上线就绪中心、可恢复项目归档、可复用验收标准包、跨项目发布总览、个人化多项目切换、可选 SMTP 邮件通知、团队待办收件箱、首次使用向导与可执行验收启动包、真实浏览器验收、不可覆写的重试与超时恢复、证据返工闭环、安全工作区、一次性成员邀请、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和独立安全审查。
+> 当前版本：`0.4.0-dev.23`。已具备面向 Codex、Claude Code 和 CI 的版本化扩展 API、机器调用幂等保护、GitHub push/CI 事件自动同步、签名校验与防重放、验收任务提交快照、管理员上线就绪中心、可恢复项目归档、可复用验收标准包、跨项目发布总览、个人化多项目切换、可选 SMTP 邮件通知、团队待办收件箱、首次使用向导与可执行验收启动包、真实浏览器验收、不可覆写的重试与超时恢复、证据返工闭环、安全工作区、一次性成员邀请、完整成员生命周期、密码恢复、告警闭环、审计导出与受控数据保留、PostgreSQL 灾备、CI/CD 发布门禁、可校验交付包、受保护的密钥轮换与回退，以及默认拒绝未授权出站目标的安全执行边界。正式公网部署仍需 HTTPS 和独立安全审查。
 
 ## 已实现
 
+- Coding Agent 扩展 API：`/api/v1` 稳定版本路径、读写权限分离、幂等任务提交、执行、证据与门禁读取
 - GitHub 自动同步：验签接收 push、check suite、check run 和 workflow run 事件，持久化防重放、分支精确匹配、失败可审计重试
 - GitHub 代码证据：管理员或审批人显式同步分支提交、签名和 CI 状态，新验收任务保存不可变提交快照，绑定提交 CI 未成功时发布门禁保持阻断
 - 上线就绪中心：以阻断、警告和通过分级检查数据库、HTTPS、主密钥、审计链、备份、独立安全评审、通知与运行健康，并导出不含机密的 JSON 报告
@@ -75,7 +76,7 @@ docker compose up --build
 
 数据库保存在 `shipwitness-postgres` 卷，截图证据保存在 `shipwitness-data` 卷。健康检查地址：`GET /api/health`，返回实际数据库引擎和连接状态。
 
-现有 JSON 数据迁移、备份、恢复和 HTTPS 部署要求见 [私有部署指南](docs/DEPLOYMENT.md)，部署分级与检查口径见 [上线就绪中心](docs/READINESS.md)，多项目使用方式见 [项目组合](docs/PROJECTS.md)，归档规则见 [项目生命周期](docs/PROJECT_LIFECYCLE.md)，标准复用见 [验收标准包](docs/CONTRACT_PACKS.md)，CI 门禁、签名卷宗和 Webhook 见 [发布自动化](docs/RELEASE_AUTOMATION.md)，Agent/GitHub 配置见 [交接与集成](docs/INTEGRATIONS.md)。
+现有 JSON 数据迁移、备份、恢复和 HTTPS 部署要求见 [私有部署指南](docs/DEPLOYMENT.md)，部署分级与检查口径见 [上线就绪中心](docs/READINESS.md)，Coding Agent 调用见 [扩展 API](docs/EXTENSION_API.md)，多项目使用方式见 [项目组合](docs/PROJECTS.md)，归档规则见 [项目生命周期](docs/PROJECT_LIFECYCLE.md)，标准复用见 [验收标准包](docs/CONTRACT_PACKS.md)，CI 门禁、签名卷宗和 Webhook 见 [发布自动化](docs/RELEASE_AUTOMATION.md)，Agent/GitHub 配置见 [交接与集成](docs/INTEGRATIONS.md)。
 
 ## 开发检查
 

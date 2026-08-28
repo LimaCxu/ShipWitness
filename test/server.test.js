@@ -281,6 +281,37 @@ test('GitHub webhook verifies signatures, rejects replays, syncs matching branch
   assert.ok(audit.body.some(item => item.action === 'github.delivery_retried'));
 });
 
+test('extension API v1 is scoped, versioned and idempotent for coding agents', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-extension-api-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const ownerRequest = authenticatedRequest(cookie);
+  const discovery = await request(base, '/api/v1');
+  assert.equal(discovery.status, 200); assert.equal(discovery.body.version, 'v1'); assert.equal(discovery.headers.get('x-shipwitness-api-version'), 'v1');
+  const project = await ownerRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: 'Agent 项目', repo: folder, url: base, branch: 'main' }) });
+  const key = await ownerRequest(base, '/api/api-keys', { method: 'POST', body: JSON.stringify({ name: 'Coding Agent', scopes: ['acceptance:read', 'acceptance:write', 'dossier:read', 'gate:read'] }) });
+  const machine = (path, options = {}) => request(base, path, { ...options, headers: { authorization: `Bearer ${key.body.token}`, ...options.headers } });
+  assert.equal((await machine('/api/projects')).status, 403);
+  const projects = await machine('/api/v1/projects');
+  assert.equal(projects.status, 200); assert.equal(projects.body[0].id, project.body.id); assert.equal(projects.headers.get('x-shipwitness-api-version'), 'v1');
+  const payload = JSON.stringify({ projectId: project.body.id, requirement: 'Agent 提交的幂等验收任务', criteria: [] });
+  assert.equal((await machine('/api/v1/runs', { method: 'POST', body: payload })).status, 400);
+  const headers = { 'idempotency-key': 'agent-run-0001' };
+  const first = await machine('/api/v1/runs', { method: 'POST', headers, body: payload });
+  assert.equal(first.status, 201);
+  const replay = await machine('/api/v1/runs', { method: 'POST', headers, body: payload });
+  assert.equal(replay.status, 200); assert.equal(replay.body.id, first.body.id); assert.equal(replay.headers.get('idempotent-replayed'), 'true');
+  const conflict = await machine('/api/v1/runs', { method: 'POST', headers, body: JSON.stringify({ projectId: project.body.id, requirement: '不同请求', criteria: [] }) });
+  assert.equal(conflict.status, 409);
+  const executed = await machine(`/api/v1/runs/${first.body.id}/execute`, { method: 'POST' });
+  assert.equal(executed.status, 200); assert.equal(executed.body.status, 'completed');
+  const read = await machine(`/api/v1/runs/${first.body.id}`);
+  assert.equal(read.status, 200); assert.equal(read.body.id, first.body.id);
+  const audit = await ownerRequest(base, '/api/audit');
+  assert.equal(audit.body.filter(item => item.action === 'run.created' && item.details.source === 'extension_api_v1').length, 1);
+});
+
 test('project archive is reversible, preserves history and protects active work', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-project-archive-'));
   const server = createApp({ storeFile: join(folder, 'store.json') });
@@ -722,7 +753,7 @@ test('authentication, roles and workspace isolation prevent cross-tenant access'
   });
   const preview = await authRequest(base, '/api/retention/preview');
   assert.equal(preview.body.total, 4);
-  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, emailDeliveries: 0, githubDeliveries: 1, alerts: 1, invitations: 0 });
+  assert.deepEqual(preview.body.counts, { sessions: 1, webhookDeliveries: 1, emailDeliveries: 0, githubDeliveries: 1, idempotencyRecords: 0, alerts: 1, invitations: 0 });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: 'wrong' }) })).status, 409);
   await store.update(data => { data.sessions.find(item => item.id === 'ses_expired_cleanup').id = 'ses_expired_replaced'; });
   assert.equal((await authRequest(base, '/api/retention/cleanup', { method: 'POST', body: JSON.stringify({ asOf: preview.body.asOf, token: preview.body.token }) })).status, 409);

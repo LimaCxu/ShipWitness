@@ -2,6 +2,13 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.23
+
+- Added the versioned `/api/v1` extension surface for coding agents and CI clients.
+- Added separate `acceptance:read` and `acceptance:write` machine-key scopes while preserving narrow gate and dossier scopes.
+- Added persistent `Idempotency-Key` enforcement for machine-created acceptance runs, including safe replay and conflict detection.
+- Added PostgreSQL-backed idempotency records, API discovery metadata, version headers, audit attribution, and end-to-end integration coverage.
+
 ## 0.4.0-dev.22
 
 - Added signed inbound GitHub webhooks for push, check-suite, check-run, and workflow-run events with exact repository and branch matching.

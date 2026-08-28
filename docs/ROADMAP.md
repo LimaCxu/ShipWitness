@@ -45,5 +45,5 @@
 - Independent penetration test and published remediation evidence
 - Supported 1.0 lifecycle and end-of-support policy
 - [x] Backup manifest, integrity verification, and restore drill tooling
-- Stable extension API for coding-agent handoff
+- [x] Stable versioned extension API for coding-agent task submission, execution, evidence reads, and idempotent retries
 - End-to-end security review and deployment guide
