@@ -29,7 +29,9 @@
 - [x] HMAC-signed webhook delivery queue with retry state
 - [x] Checksummed versioned release bundles and tag-driven release workflow
 - [x] Upgrade preflight for backup freshness, key validity, and schema compatibility
-- Automated rollback orchestration and key rotation tooling
+- [x] Transactional master-key rotation with audit events
+- [x] Exact-version Compose rollback orchestration with health confirmation
+- End-to-end external security review and supported 1.0 compatibility contract
 - [x] Backup manifest, integrity verification, and restore drill tooling
 - Stable extension API for coding-agent handoff
 - End-to-end security review and deployment guide

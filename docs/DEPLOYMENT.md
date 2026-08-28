@@ -70,7 +70,48 @@ The command fails closed when the backup hash is invalid or older than 24 hours,
 6. Log in, open a historical run, verify one screenshot and one signed dossier, then exercise a non-production webhook receiver.
 7. Only then replace remaining instances.
 
-If any post-upgrade check fails, stop the new image. Restore the previous application image **and** the matching verified database/evidence backup as one unit. Keep the failed upgrade backup for diagnosis.
+If any post-upgrade check fails, use the version-bound rollback command below. It restores the previous application image **and** the matching verified database/evidence backup as one unit. Keep the failed upgrade backup for diagnosis.
+
+### Automated Compose rollback
+
+First inspect the exact plan; dry-run verifies the backup and requires the image tag to exactly match `applicationVersion` in its manifest:
+
+```bash
+SHIPWITNESS_ROLLBACK_IMAGE='shipwitness:0.4.0-dev.5' \
+npm run rollback -- /path/to/dev.5-backup --dry-run
+```
+
+Then schedule downtime and execute with explicit confirmation:
+
+```bash
+SHIPWITNESS_ROLLBACK_IMAGE='shipwitness:0.4.0-dev.5' \
+SHIPWITNESS_ROLLBACK_CONFIRM=YES \
+npm run rollback -- /path/to/dev.5-backup
+```
+
+The orchestrator checks that the exact image exists, stops only the `shipwitness` service, restores the matching database and evidence through the pinned image, starts that image, and waits for `/api/health` to report the expected version. It rejects `latest` and mismatched backup/image versions. If restoration fails, the application remains stopped instead of starting against uncertain data.
+
+## Rotate the master key
+
+Key rotation re-encrypts every workspace Ed25519 private key and Webhook secret in one PostgreSQL serializable transaction. Existing signed dossiers remain valid because their public keys and signatures do not change.
+
+1. Stop all ShipWitness application instances so none can write with the old key during rotation.
+2. Create and verify a fresh backup from the stopped deployment.
+3. Generate a new key with `openssl rand -base64 32` and store it in the secret manager.
+4. Run:
+
+```bash
+DATABASE_URL='postgresql://...' \
+SHIPWITNESS_MASTER_KEY='current-key' \
+SHIPWITNESS_NEW_MASTER_KEY='new-key' \
+SHIPWITNESS_KEY_ROTATION_CONFIRM=YES \
+npm run key:rotate -- /path/to/fresh-backup
+```
+
+5. Replace `SHIPWITNESS_MASTER_KEY` in every application instance, remove the temporary new-key variable, and restart all instances.
+6. Generate and verify one signed dossier, then exercise one test webhook.
+
+The command refuses backups older than 24 hours, malformed or identical keys, and any ciphertext that cannot be decrypted by the current key. A failure rolls back the whole database transaction. Each workspace receives a hash-chained `security.master_key_rotated` audit event containing only the new key fingerprint, never either key.
 
 ## Build and verify a release bundle
 

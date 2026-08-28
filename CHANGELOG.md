@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.6
+
+- Added transactional re-encryption of signing and webhook secrets with mandatory verified backup and audit records.
+- Added version-bound Compose rollback orchestration with dry-run plans and post-restore health confirmation.
+- Tightened master-key parsing to canonical Base64.
+
 ## 0.4.0-dev.5
 
 - Added checksummed, versioned self-hosted release bundles.

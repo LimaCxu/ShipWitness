@@ -11,4 +11,5 @@ test('Ed25519 dossier signature verifies offline and detects payload changes', (
   payload.run.verdict = 'failed';
   assert.equal(verifySignedPayload(payload, signature), false);
   assert.doesNotMatch(key.encryptedPrivateKey, /PRIVATE KEY/);
+  assert.throws(() => createSigningKey(`${secret}!`), /标准 Base64/);
 });
