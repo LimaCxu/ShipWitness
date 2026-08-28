@@ -27,6 +27,10 @@ jobs:
           npm run release:verify -- "dist/shipwitness-${GITHUB_REF_NAME#v}"
           cd dist
           sha256sum --check "shipwitness-${GITHUB_REF_NAME#v}.tar.gz.sha256"
+      - name: Build and smoke the tagged delivery image
+        run: |
+          docker build --tag "shipwitness:${GITHUB_REF_NAME#v}" .
+          docker run --rm "shipwitness:${GITHUB_REF_NAME#v}" npm run smoke:self
       - name: Publish immutable GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}

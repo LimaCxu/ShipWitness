@@ -30,6 +30,8 @@ For GitHub automatic synchronization, generate a separate random Webhook secret,
 
 Before handing an artifact to a customer, run `npm run smoke:self` from the exact extracted release directory. It creates an isolated temporary workspace, performs real Chromium assertions against ShipWitness itself, hashes screenshot evidence, passes the deterministic release gate, verifies an Ed25519 signed dossier, and removes all temporary state. A successful command is delivery evidence for the packaged runtime, not a substitute for testing the customer's own application path.
 
+GitHub CI and tag releases additionally build the exact Docker delivery image and run the same self-smoke inside that image as the unprivileged application user. A tag cannot publish release assets when the image-level browser or evidence loop fails.
+
 Before requesting a public-production decision, record the independent review evidence and stable-release lifecycle metadata:
 
 ```bash

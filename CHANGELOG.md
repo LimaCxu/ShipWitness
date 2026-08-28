@@ -2,6 +2,11 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.53
+
+- CI now builds the customer delivery image and runs the full browser-to-signed-dossier self-smoke inside that exact container.
+- Tag releases enforce the same image-level gate before publishing immutable assets, catching packaging, runtime-permission, and bundled-browser failures that source checks cannot prove.
+
 ## 0.4.0-dev.52
 
 - Added an isolated one-command delivery smoke test that exercises the real Chromium executor, screenshot evidence, deterministic release gate, and Ed25519 signed-dossier verification without touching existing workspace data.

@@ -38,3 +38,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run check
       - run: npm run smoke:self
+      - name: Build the customer delivery image
+        run: docker build --tag shipwitness:ci .
+      - name: Smoke the exact customer delivery image
+        run: docker run --rm shipwitness:ci npm run smoke:self

@@ -40,6 +40,7 @@
 - [x] Proactive acceptance-credential lifecycle alerts and readiness integration
 - [x] Bounded, expiring login throttling with standards-based retry guidance
 - [x] Isolated delivery self-smoke covering real browser evidence, release gate, and signed dossier
+- [x] Exact delivery-image self-smoke enforced in CI and tag releases
 
 ## 1.0 — Self-hosted release gate
 
