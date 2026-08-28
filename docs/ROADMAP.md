@@ -25,6 +25,7 @@
 - [x] Role-aware team inbox with personal unread state and direct task handling
 - [x] Optional SMTP notification queue with encrypted payloads, retry, audit, and delivery management
 - [x] Per-user, workspace-isolated project switching with persistent selection and task deep links
+- [x] Evidence-derived project portfolio with release state, work counts, and direct actions
 
 ## 1.0 — Self-hosted release gate
 

@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.16';
+const serviceVersion = '0.4.0-dev.17';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -731,6 +731,28 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return { project, contracts, run, kit };
         });
         return json(res, 201, created);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/projects/overview') {
+        const data = await store.read();
+        const projects = data.projects.filter(item => item.workspaceId === workspaceId);
+        const items = projects.map(project => {
+          const runs = data.runs.filter(item => item.workspaceId === workspaceId && item.projectId === project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+          const latestRun = runs[0] || null;
+          const decision = latestRun ? data.decisions.filter(item => item.workspaceId === workspaceId && item.runId === latestRun.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] : null;
+          const openIssues = data.issues.filter(item => item.workspaceId === workspaceId && item.projectId === project.id && !['verified', 'closed'].includes(item.status));
+          const contracts = data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id);
+          let state = 'not_started';
+          if (latestRun?.status === 'running') state = 'running';
+          else if (latestRun?.status === 'queued') state = 'queued';
+          else if (latestRun?.status === 'failed' || latestRun?.execution?.verdict === 'failed') state = 'failed';
+          else if (decision?.verdict === 'approve') state = 'approved';
+          else if (decision?.verdict === 'hold') state = 'held';
+          else if (latestRun?.execution?.verdict === 'passed') state = 'awaiting_approval';
+          else if (latestRun) state = 'evidence_insufficient';
+          return { id: project.id, name: project.name, branch: project.branch, url: project.url, state, updatedAt: latestRun?.completedAt || latestRun?.failedAt || latestRun?.createdAt || project.updatedAt, latestRun: latestRun ? { id: latestRun.id, requirement: latestRun.requirement, status: latestRun.status, verdict: latestRun.execution?.verdict || null, createdAt: latestRun.createdAt } : null, decision: decision ? { verdict: decision.verdict, owner: decision.owner, createdAt: decision.createdAt } : null, counts: { runs: runs.length, openIssues: openIssues.length, contracts: contracts.length, enabledContracts: contracts.filter(item => item.enabled).length } };
+        }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const actionableStates = new Set(['failed', 'held', 'evidence_insufficient']);
+        return json(res, 200, { summary: { projects: items.length, actionable: items.filter(item => actionableStates.has(item.state) || item.counts.openIssues > 0).length, inProgress: items.filter(item => ['queued', 'running', 'awaiting_approval'].includes(item.state)).length, approved: items.filter(item => item.state === 'approved').length }, items });
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') {
         const data = await store.read();

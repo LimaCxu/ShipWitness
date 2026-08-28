@@ -188,10 +188,17 @@ test('project selection persists per user and workspace', async t => {
   assert.equal((await memberRequest(base, '/api/projects')).body.find(item => item.selected).id, second.body.id);
   assert.equal((await ownerRequest(base, '/api/projects')).body.find(item => item.selected).id, first.body.id);
 
+  await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: first.body.id, requirement: '验证项目甲发布状态', criteria: [] }) });
+  const overview = await ownerRequest(base, '/api/projects/overview');
+  assert.deepEqual(overview.body.summary, { projects: 2, actionable: 0, inProgress: 1, approved: 0 });
+  assert.equal(overview.body.items.find(item => item.id === first.body.id).state, 'queued');
+  assert.equal(overview.body.items.find(item => item.id === second.body.id).state, 'not_started');
+
   const workspace = await ownerRequest(base, '/api/workspaces', { method: 'POST', body: JSON.stringify({ name: '另一个工作区' }) });
   assert.equal(workspace.status, 201);
   assert.equal((await ownerRequest(base, `/api/projects/${first.body.id}/select`, { method: 'POST' })).status, 404);
   assert.equal((await ownerRequest(base, '/api/projects')).body.length, 0);
+  assert.deepEqual((await ownerRequest(base, '/api/projects/overview')).body.summary, { projects: 0, actionable: 0, inProgress: 0, approved: 0 });
 });
 
 test('starter kit creates a project, executable contracts and first run atomically', async t => {

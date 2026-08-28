@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.17
+
+- Added an evidence-derived project portfolio with approved, awaiting-approval, active, blocked, and not-started states.
+- Added project-level run, contract, and open-rework counts with direct project and task navigation.
+- Added workspace isolation tests and responsive top-bar behavior for the new portfolio entry.
+
 ## 0.4.0-dev.16
 
 - Added a persistent top-bar project switcher with personal selection per workspace.

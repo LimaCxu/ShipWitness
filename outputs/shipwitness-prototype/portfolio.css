@@ -1,0 +1,17 @@
+.project-slot {
+  flex: none;
+}
+
+.portfolio-button {
+  flex: none;
+  min-width: 58px;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1400px) {
+  .bar-actions > .icon-btn,
+  .bar-actions > .export {
+    display: none;
+  }
+}
