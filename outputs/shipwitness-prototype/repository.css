@@ -70,3 +70,27 @@
 .security-review-form textarea { min-height: 55px; resize: vertical; }
 .security-review-form .security-finding-fields { grid-template-columns: 90px 1fr 1.4fr; }
 .security-review-form > button { height: 34px; border: 0; border-radius: 6px; color: #fff; background: #3157d5; font-size: 9px; font-weight: 700; cursor: pointer; }
+.security-finding-dialog { width: min(520px, calc(100vw - 32px)); padding: 0; border: 0; border-radius: 12px; color: #26324a; background: #fff; box-shadow: 0 24px 70px rgba(26, 36, 68, .22); }
+.security-finding-dialog::backdrop { background: rgba(23, 32, 51, .42); }
+.security-finding-dialog form { display: grid; }
+.security-finding-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px 18px; border-bottom: 1px solid #e6e9ef; }
+.security-finding-dialog header div { display: grid; gap: 5px; }
+.security-finding-dialog header span { color: #5368c7; font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.security-finding-dialog header h3 { margin: 0; color: #17213b; font-size: 18px; }
+.security-finding-dialog header p { margin: 0; color: #7a8498; font-size: 10px; }
+.security-finding-dialog header button { border: 0; color: #7b8498; background: transparent; font-size: 19px; cursor: pointer; }
+.security-finding-dialog form > section { display: grid; gap: 10px; padding: 20px 24px 4px; }
+.security-finding-dialog label { display: grid; gap: 7px; }
+.security-finding-dialog label > span { color: #47536a; font-size: 10px; font-weight: 700; }
+.security-finding-dialog textarea,.security-finding-dialog input { box-sizing: border-box; width: 100%; padding: 10px 11px; border: 1px solid #cfd5e2; border-radius: 7px; color: #26324a; background: #fff; font: 10px var(--sans); outline: none; }
+.security-finding-dialog textarea { min-height: 92px; resize: vertical; line-height: 1.55; }
+.security-finding-dialog textarea:focus,.security-finding-dialog input:focus { border-color: #526fe0; box-shadow: 0 0 0 3px rgba(82, 111, 224, .12); }
+.security-finding-dialog section > small { color: #858ea1; font-size: 9px; line-height: 1.5; }
+.security-risk-warning { padding: 11px 12px; border-left: 3px solid #d49a32; background: #fff8e9; }
+.security-risk-warning b { color: #7b5310; font-size: 10px; }
+.security-risk-warning p { margin: 4px 0 0; color: #8c6a30; font-size: 9px; line-height: 1.5; }
+.security-finding-action-error { margin: 12px 24px 0; padding: 9px 11px; border-radius: 6px; color: #b42318; background: #fff1f0; font-size: 9px; }
+.security-finding-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 18px 24px 22px; }
+.security-finding-dialog footer button { padding: 8px 13px; border: 1px solid #d3d8e2; border-radius: 6px; color: #59647a; background: #fff; font-size: 9px; font-weight: 700; cursor: pointer; }
+.security-finding-dialog footer button[type="submit"] { border-color: #3157d5; color: #fff; background: #3157d5; }
+.security-finding-dialog footer button:disabled { opacity: .55; cursor: default; }

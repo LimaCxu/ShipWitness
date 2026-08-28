@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.28
+
+- Replaced native browser prompts in security remediation with a structured business dialog for retest evidence and time-bound risk acceptance.
+- Added explicit risk warnings and owner-selected expiry dates constrained to the server's 90-day policy.
+- Kept validation errors inside the remediation workflow so operators do not lose their entered evidence.
+
 ## 0.4.0-dev.27
 
 - Replaced the prototype-style new-run form with a current-project snapshot, a required release objective, and selection of persisted acceptance standards.
