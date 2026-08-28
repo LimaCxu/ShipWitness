@@ -8,6 +8,10 @@ const api = async (path, options = {}) => {
 let backendProjectId = null;
 let backendRunId = null;
 let backendContracts = [];
+let backendProject = null;
+let dashboardRun = null;
+let dashboardCriterionIndex = 0;
+let dashboardStage = 'claim';
 
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[character]));
 const defaultContracts = [
@@ -49,6 +53,82 @@ const setServiceState = (ok, text) => {
   badge.childNodes[1].textContent = ` ${text} `;
 };
 
+const verdictMeta = value => ({
+  passed: { label: '可以发布', className: 'success', detail: '所有标准都有真实断言证据。' },
+  failed: { label: '不可发布', className: 'danger', detail: '至少一条业务路径未达到标准。' },
+  blocked: { label: '执行受阻', className: 'danger', detail: '环境问题阻断了业务验收。' },
+  evidence_insufficient: { label: '证据不足', className: 'warning', detail: '仍有标准没有可执行步骤或明确断言。' },
+  queued: { label: '等待执行', className: 'warning', detail: '任务已经创建，尚未执行验收。' }
+}[value] || { label: '等待验收', className: 'warning', detail: '创建并执行任务后生成发布结论。' });
+
+const criterionResult = (run, index) => run?.execution?.criteriaResults?.[index] || (run?.criteria?.[index] ? { ...run.criteria[index], result: run.status === 'queued' ? 'queued' : 'evidence_insufficient', reason: run.status === 'queued' ? '等待执行器' : '尚无执行证据' } : null);
+
+function renderLiveDashboard(project, run) {
+  backendProject = project || null;
+  dashboardRun = run || null;
+  const heading = document.querySelector('.project-head h1');
+  const overline = document.querySelector('.project-head .overline');
+  const scope = document.querySelector('.scope');
+  const caseStrip = document.querySelector('.case-strip');
+  if (!project) {
+    heading.innerHTML = '尚未接入项目 <em>发布验收</em>';
+    overline.textContent = '项目 / 尚未接入';
+    caseStrip.innerHTML = '<button class="case-chip active" disabled><i class="hold"></i><span>没有项目数据<small>先完成项目接入</small></span><b>—</b></button>';
+    overallVerdict.textContent = '等待接入'; verdictSummary.textContent = '保存项目目录和测试网址后开始验收。';
+    nextAction.innerHTML = '<span class="mini-label">下一步</span><h3>接入第一个项目</h3><p>连接代码目录、测试网址和返工方式。</p><button class="decide" id="dashboardConnect">检查项目接入 <span>→</span></button>';
+    document.querySelector('#dashboardConnect').onclick = () => toggleConnect(true);
+    return;
+  }
+  heading.innerHTML = `${escapeHtml(project.name)} <em>发布验收</em>`;
+  overline.textContent = `项目 / ${project.name}${run ? ` / ${run.id.toUpperCase()}` : ''}`;
+  scope.innerHTML = `<span>当前分支</span><strong><code>${escapeHtml(project.branch)}</code></strong><small>${run ? new Date(run.createdAt).toLocaleString('zh-CN') : '尚未创建验收任务'}</small>`;
+  document.querySelector('.case-id b').textContent = run ? run.id.toUpperCase() : '—';
+
+  const criteria = run?.criteria || [];
+  if (!criteria.length) {
+    caseStrip.innerHTML = '<button class="case-chip active" disabled><i class="hold"></i><span>暂无验收任务<small>从标准库创建任务</small></span><b>—</b></button>';
+    pathLabel.textContent = '尚未创建任务'; caseTitle.textContent = '先确认验收标准'; contractText.textContent = '标准会在任务创建时形成不可变快照。';
+    stageKicker.textContent = '真实数据'; stageTitle.textContent = '没有可展示的证据'; stageBody.textContent = '点击“新建验收”选择标准并创建任务。'; stageVisual.innerHTML = '<div class="live-empty">等待第一次真实验收</div>';
+    const meta = verdictMeta(); overallVerdict.textContent = meta.label; verdictSummary.textContent = meta.detail; verdictMark.className = `verdict-mark ${meta.className}`;
+    nextAction.innerHTML = '<span class="mini-label">下一步</span><h3>创建第一次验收</h3><p>选择标准，保存任务快照，再执行浏览器路径。</p><button class="decide" id="dashboardNewRun">新建验收 <span>→</span></button>';
+    document.querySelector('#dashboardNewRun').onclick = () => newRunBtn.click();
+    return;
+  }
+  dashboardCriterionIndex = Math.min(dashboardCriterionIndex, criteria.length - 1);
+  caseStrip.innerHTML = criteria.map((criterion, index) => {
+    const result = criterionResult(run, index); const icon = result.result === 'passed' ? 'pass' : result.result === 'failed' || result.result === 'blocked' ? 'fail' : 'hold';
+    return `<button class="case-chip ${index === dashboardCriterionIndex ? 'active' : ''}" data-live-index="${index}"><i class="${icon}"></i><span>${escapeHtml(criterion.title)}<small>${resultLabel(result.result)}</small></span><b>${String(index + 1).padStart(2, '0')}</b></button>`;
+  }).join('');
+  caseStrip.querySelectorAll('.case-chip').forEach(button => { button.onclick = () => { dashboardCriterionIndex = Number(button.dataset.liveIndex); dashboardStage = 'claim'; renderLiveDashboard(project, run); }; });
+  const criterion = criteria[dashboardCriterionIndex];
+  const result = criterionResult(run, dashboardCriterionIndex);
+  pathLabel.textContent = `${criterion.code || `路径 ${dashboardCriterionIndex + 1}`} · V${criterion.version || 1}`;
+  caseTitle.textContent = criterion.title;
+  contractText.textContent = criterion.description;
+  const stages = {
+    claim: { kicker: '验收标准快照', title: '必须证明的用户结果', body: criterion.description, visual: `<div class="record"><div class="record-head"><span>${escapeHtml(criterion.code || '未编号')}</span><code>V${criterion.version || 1}</code></div><blockquote>${escapeHtml(criterion.title)}</blockquote><dl><div><dt>分类</dt><dd>${escapeHtml(criterion.category || '业务流程')}</dd></div><div><dt>级别</dt><dd>${criterion.severity === 'blocker' ? '阻断发布' : '一般'}</dd></div><div><dt>执行步骤</dt><dd>${criterion.steps?.length || 0}</dd></div></dl></div>` },
+    action: { kicker: '真实浏览器计划', title: criterion.steps?.length ? `执行 ${criterion.steps.length} 个受限步骤` : '尚未配置浏览器步骤', body: criterion.steps?.length ? '执行器只运行标准快照中允许的动作，不执行任意脚本。' : '没有步骤时不会猜测业务结果。', visual: `<ol class="live-step-list">${(criterion.steps || []).map((step, index) => `<li><b>${index + 1}</b><span>${escapeHtml(stepOptions.find(item => item[0] === step.action)?.[1] || step.action)}<small>${escapeHtml(step.path || step.selector || step.value || '')}</small></span></li>`).join('') || '<li class="empty">请在标准库中添加执行步骤</li>'}</ol>` },
+    observe: { kicker: '浏览器观察结果', title: resultLabel(result.result), body: result.reason || '尚未执行', visual: result.screenshotUrl ? `<a class="evidence-shot" href="${result.screenshotUrl}" target="_blank"><img src="${result.screenshotUrl}" alt="${escapeHtml(criterion.title)}截图证据"><span>打开完整截图 ↗</span></a>` : `<div class="observation"><div class="fact-row"><span>完成步骤</span><b>${result.steps?.filter(step => step.status === 'passed').length || 0} / ${result.steps?.length || criterion.steps?.length || 0}</b></div><div class="fact-row"><span>网络响应</span><b>${result.network?.length || 0} 条</b></div><div class="fact-row"><span>最终网址</span><b>${escapeHtml(result.finalUrl || '尚未记录')}</b></div></div>` },
+    verdictStage: { kicker: '证据裁决', title: verdictMeta(result.result).label, body: result.reason || verdictMeta(result.result).detail, visual: `<div class="verdict-card"><span>${result.result === 'passed' ? '验收通过' : result.result === 'failed' ? '验收失败' : '不作通过判断'}</span><strong>${verdictMeta(result.result).label}</strong><p>${escapeHtml(result.reason || verdictMeta(result.result).detail)}</p></div>` }
+  };
+  const stage = stages[dashboardStage]; stageKicker.textContent = stage.kicker; stageTitle.textContent = stage.title; stageBody.textContent = stage.body; stageVisual.innerHTML = stage.visual;
+  stageTime.textContent = run.execution?.finishedAt ? new Date(run.execution.finishedAt).toLocaleTimeString('zh-CN') : '—'; stageDuration.textContent = result.durationMs ? `${result.durationMs} ms` : '—';
+  const order = ['claim', 'action', 'observe', 'verdictStage']; const current = order.indexOf(dashboardStage);
+  document.querySelectorAll('.proof-node').forEach((node, index) => { node.classList.toggle('active', index === current); node.classList.toggle('completed', index < current); node.onclick = () => { dashboardStage = node.dataset.stage; renderLiveDashboard(project, run); }; });
+  document.querySelector('.proof-track').style.setProperty('--proof-progress', `${current / 3 * 88}%`);
+  plainBtn.onclick = () => { stageTitle.textContent = result.result === 'passed' ? '这条标准有证据证明通过了' : result.result === 'failed' ? '真实操作没有达到要求' : '目前的证据还不能说明它做对了'; stageBody.textContent = result.reason || '尚未执行'; };
+  evidenceBtn.onclick = () => { rawEvidence.textContent = JSON.stringify({ criterion, result }, null, 2); drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false'); };
+
+  const overall = run.execution?.verdict || (run.status === 'queued' ? 'queued' : 'evidence_insufficient'); const meta = verdictMeta(overall);
+  overallVerdict.textContent = meta.label; verdictSummary.textContent = run.execution?.summary || meta.detail; verdictMark.className = `verdict-mark ${meta.className}`;
+  const results = criteria.map((_, index) => criterionResult(run, index)); failedCount.textContent = results.filter(item => ['failed', 'blocked'].includes(item.result)).length; holdCount.textContent = results.filter(item => ['queued', 'evidence_insufficient'].includes(item.result)).length; passedCount.textContent = results.filter(item => item.result === 'passed').length;
+  if (overall === 'passed') nextAction.innerHTML = '<span class="mini-label">发布门槛已满足</span><h3>保存发布卷宗</h3><p>所有标准都有真实断言证据，可以记录负责人决定。</p><button class="decide" id="dashboardExport">导出真实卷宗 <span>→</span></button>';
+  else if (overall === 'failed') nextAction.innerHTML = '<span class="mini-label">现在需要处理</span><h3>查看失败路径</h3><p>先核对截图和步骤，再生成返工单。</p><button class="decide" id="viewQueueBtn">查看任务证据 <span>→</span></button>';
+  else if (run.status === 'queued') nextAction.innerHTML = '<span class="mini-label">任务已经就绪</span><h3>执行真实浏览器验收</h3><p>执行后保存步骤、网络响应和截图证据。</p><button class="decide" id="viewQueueBtn">打开任务并执行 <span>→</span></button>';
+  else nextAction.innerHTML = '<span class="mini-label">证据仍不完整</span><h3>补齐浏览器步骤</h3><p>未配置步骤的标准不会被判定通过。</p><button class="decide" id="dashboardContracts">打开标准库 <span>→</span></button>';
+  document.querySelector('#dashboardContracts')?.addEventListener('click', () => contractsBtn.click()); document.querySelector('#dashboardExport')?.addEventListener('click', () => downloadDossier.click());
+}
+
 async function bootstrapBackend() {
   try {
     await api('/api/health');
@@ -57,6 +137,7 @@ async function bootstrapBackend() {
     const saved = projects[0];
     if (saved) {
       backendProjectId = saved.id;
+      backendProject = saved;
       connectRepo.value = saved.repo;
       connectUrl.value = saved.url;
       connectBranch.value = saved.branch;
@@ -66,16 +147,17 @@ async function bootstrapBackend() {
       await loadContracts({ seed: true });
     }
     const runs = await api('/api/runs');
+    const projectRuns = saved ? runs.filter(item => item.projectId === saved.id) : [];
+    historyList.innerHTML = projectRuns.map((run, index) => { const meta = verdictMeta(run.execution?.verdict || (run.status === 'queued' ? 'queued' : 'evidence_insufficient')); return `<article class="${index === 0 ? 'current' : ''}" data-run-id="${run.id}"><i></i><div><header><b>${run.id.toUpperCase()}</b><time>${new Date(run.createdAt).toLocaleString('zh-CN')}</time></header><h3>${escapeHtml(run.requirement)}</h3><p>${run.criteria.length} 条标准 · ${meta.label}</p><span class="history-status ${run.execution?.verdict === 'passed' ? 'pass-status' : run.execution?.verdict === 'failed' ? 'fail-status' : 'hold-status'}">${meta.label}</span><button class="open-run-detail" data-run-id="${run.id}">查看真实任务</button></div></article>`; }).join('') || '<div class="contract-empty">还没有验收记录</div>';
+    const summary = document.querySelectorAll('.history-summary b'); if (summary.length === 3) { summary[0].textContent = projectRuns.length; summary[1].textContent = projectRuns.filter(item => item.status !== 'completed').length; summary[2].textContent = projectRuns.filter(item => item.execution?.verdict === 'passed').length; }
+    historyBtn.querySelector('span').textContent = String(projectRuns.length);
     if (runs[0]) {
-      backendRunId = runs[0].id;
-      const existing = document.querySelector('#backendRunEntry');
-      const statusLabel = runs[0].status === 'completed' ? (runs[0].execution?.executor === 'shipwitness-browser-v1' ? '真实验收完成' : '基础检查完成') : '等待执行';
-      const markup = `<article id="backendRunEntry" class="current"><i></i><div><header><b>${runs[0].id.toUpperCase()}</b><time>后端记录</time></header><h3>${statusLabel}</h3><p>${runs[0].criteria.length} 条验收标准 · 状态 ${runs[0].status}</p><span class="history-status hold-status">${runs[0].execution?.verdict === 'evidence_insufficient' ? '证据不足' : '等待执行器'}</span><button class="open-run-detail">查看真实任务</button></div></article>`;
-      existing ? existing.outerHTML = markup : historyList.insertAdjacentHTML('afterbegin', markup);
-      historyBtn.querySelector('span').textContent = String(3 + runs.length);
+      backendRunId = projectRuns[0]?.id || runs[0].id;
     }
+    renderLiveDashboard(saved, projectRuns[0]);
   } catch {
     setServiceState(false, '后端未启动');
+    renderLiveDashboard(null, null);
   }
 }
 
@@ -83,6 +165,7 @@ saveConnection.onclick = async () => {
   try {
     const project = await api('/api/projects', { method: 'POST', body: JSON.stringify({ id: backendProjectId, name: document.querySelector('.project-head h1').childNodes[0].textContent.trim(), repo: connectRepo.value, url: connectUrl.value, branch: connectBranch.value, handoffMode: handoffMode.value }) });
     backendProjectId = project.id;
+    backendProject = project;
     await loadContracts({ seed: true });
     connectText.textContent = '后端已保存';
     connectBtn.classList.add('partial');
@@ -122,7 +205,8 @@ window.shipwitnessCreateRun = async () => {
   const selectedIds = [...document.querySelectorAll('#criteriaList label')].filter(item => item.querySelector('input').checked).map(item => item.dataset.contractId);
   const criteria = backendContracts.filter(item => item.enabled && selectedIds.includes(item.id)).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: item.steps || [], version: item.version }));
   const run = await api('/api/runs', { method: 'POST', body: JSON.stringify({ projectId: backendProjectId, requirement: runRequirement.value, criteria }) });
-  backendRunId = run.id;
+    backendRunId = run.id;
+  renderLiveDashboard(backendProject, run);
   return run;
 };
 
@@ -187,6 +271,7 @@ const resultLabel = value => ({ ready: '已就绪', passed: '已通过', warning
 async function loadRunTask() {
   if (!backendRunId) return toast('还没有后端验收任务');
   const run = await api(`/api/runs/${backendRunId}`);
+  renderLiveDashboard(backendProject, run);
   runTaskId.textContent = run.id.toUpperCase();
   runTaskStatus.textContent = run.status === 'completed' ? (run.execution?.executor === 'shipwitness-browser-v1' ? '真实验收已完成' : '基础检查已完成') : run.status === 'running' ? '正在执行' : '等待执行';
   runTaskSummary.textContent = run.execution?.summary || '任务已保存，尚未运行任何检查。';
@@ -211,7 +296,7 @@ async function loadRunTask() {
   toggleRunTask(true);
 }
 closeRunTask.onclick = () => toggleRunTask(false); runTaskMask.onclick = () => toggleRunTask(false);
-document.addEventListener('click', event => { if (event.target.closest('.open-run-detail') || event.target.closest('#viewQueueBtn')) loadRunTask().catch(error => toast(error.message)); });
+document.addEventListener('click', event => { const trigger = event.target.closest('.open-run-detail') || event.target.closest('#viewQueueBtn'); if (trigger) { if (trigger.dataset.runId) backendRunId = trigger.dataset.runId; loadRunTask().catch(error => toast(error.message)); } });
 executeRunBtn.onclick = async () => {
   executeRunBtn.disabled = true; executeRunBtn.textContent = '正在执行与取证…'; runTaskStatus.textContent = '正在执行';
   try { await api(`/api/runs/${backendRunId}/execute`, { method: 'POST' }); await loadRunTask(); toast('验收证据已保存到后端'); }
@@ -259,3 +344,4 @@ downloadDossier.onclick = async () => {
     toast('后端验收卷宗已生成');
   } catch (error) { toast(error.message); }
 };
+exportBtn.onclick = () => downloadDossier.click();
