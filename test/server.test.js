@@ -190,7 +190,7 @@ test('project selection persists per user and workspace', async t => {
 
   await ownerRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: first.body.id, requirement: '验证项目甲发布状态', criteria: [] }) });
   const overview = await ownerRequest(base, '/api/projects/overview');
-  assert.deepEqual(overview.body.summary, { projects: 2, actionable: 0, inProgress: 1, approved: 0 });
+  assert.deepEqual(overview.body.summary, { projects: 2, actionable: 0, inProgress: 1, approved: 0, archived: 0 });
   assert.equal(overview.body.items.find(item => item.id === first.body.id).state, 'queued');
   assert.equal(overview.body.items.find(item => item.id === second.body.id).state, 'not_started');
 
@@ -198,7 +198,44 @@ test('project selection persists per user and workspace', async t => {
   assert.equal(workspace.status, 201);
   assert.equal((await ownerRequest(base, `/api/projects/${first.body.id}/select`, { method: 'POST' })).status, 404);
   assert.equal((await ownerRequest(base, '/api/projects')).body.length, 0);
-  assert.deepEqual((await ownerRequest(base, '/api/projects/overview')).body.summary, { projects: 0, actionable: 0, inProgress: 0, approved: 0 });
+  assert.deepEqual((await ownerRequest(base, '/api/projects/overview')).body.summary, { projects: 0, actionable: 0, inProgress: 0, approved: 0, archived: 0 });
+});
+
+test('project archive is reversible, preserves history and protects active work', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-project-archive-'));
+  const server = createApp({ storeFile: join(folder, 'store.json') });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`; const cookie = await setupOwner(base); const authRequest = authenticatedRequest(cookie);
+  const archivedProject = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '已交付项目', repo: folder, url: base, branch: 'main' }) });
+  const activeProject = await authRequest(base, '/api/projects', { method: 'POST', body: JSON.stringify({ name: '正在开发项目', repo: folder, url: base, branch: 'develop' }) });
+  await authRequest(base, `/api/projects/${archivedProject.body.id}/select`, { method: 'POST' });
+  const archived = await authRequest(base, `/api/projects/${archivedProject.body.id}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true, reason: '客户已经验收交付' }) });
+  assert.equal(archived.status, 200); assert.ok(archived.body.archivedAt);
+  const active = (await authRequest(base, '/api/projects')).body;
+  assert.equal(active.length, 1); assert.equal(active[0].id, activeProject.body.id); assert.equal(active[0].selected, true);
+  const all = (await authRequest(base, '/api/projects?includeArchived=true')).body;
+  assert.equal(all.length, 2); assert.equal(all.find(item => item.id === archivedProject.body.id).archiveReason, '客户已经验收交付');
+  const overview = await authRequest(base, '/api/projects/overview');
+  assert.equal(overview.body.summary.archived, 1); assert.equal(overview.body.archived[0].id, archivedProject.body.id);
+  assert.equal((await authRequest(base, `/api/projects/${archivedProject.body.id}/select`, { method: 'POST' })).status, 404);
+  assert.equal((await authRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: archivedProject.body.id, requirement: '不应创建', criteria: [] }) })).status, 404);
+  assert.equal((await authRequest(base, '/api/contracts', { method: 'POST', body: JSON.stringify({ projectId: archivedProject.body.id, code: 'NO-01', title: '不应创建', description: '已归档项目不可写入' }) })).status, 404);
+
+  await authRequest(base, '/api/runs', { method: 'POST', body: JSON.stringify({ projectId: activeProject.body.id, requirement: '仍在排队的任务', criteria: [] }) });
+  const blocked = await authRequest(base, `/api/projects/${activeProject.body.id}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true, reason: '暂时停止' }) });
+  assert.equal(blocked.status, 409); assert.match(blocked.body.error, /等待或执行中/);
+  const restored = await authRequest(base, `/api/projects/${archivedProject.body.id}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: false }) });
+  assert.equal(restored.status, 200); assert.equal(restored.body.archivedAt, undefined);
+  assert.equal((await authRequest(base, '/api/projects')).body.length, 2);
+  const audit = await authRequest(base, '/api/audit');
+  assert.ok(audit.body.some(item => item.action === 'project.archived' && item.entityId === archivedProject.body.id));
+  assert.ok(audit.body.some(item => item.action === 'project.restored' && item.entityId === archivedProject.body.id));
+
+  await authRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'archive-member@example.com', password: 'archive-member-password', role: 'member' }) });
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'archive-member@example.com', password: 'archive-member-password' }) });
+  const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, `/api/projects/${archivedProject.body.id}/archive`, { method: 'PATCH', body: JSON.stringify({ archived: true, reason: '无权操作' }) })).status, 403);
 });
 
 test('contract packs preview conflicts, import safely, export and bulk update', async t => {

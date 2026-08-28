@@ -27,6 +27,7 @@
 - [x] Per-user, workspace-isolated project switching with persistent selection and task deep links
 - [x] Evidence-derived project portfolio with release state, work counts, and direct actions
 - [x] Reusable acceptance-contract packs with previewed conflicts, safe import/export, and bulk state changes
+- [x] Reversible project archival with owner authorization, active-work protection, and preserved evidence
 
 ## 1.0 — Self-hosted release gate
 

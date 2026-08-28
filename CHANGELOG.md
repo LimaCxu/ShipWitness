@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.19
+
+- Added owner-only project archival and restoration with mandatory reasons and audit events.
+- Preserved all run, contract, issue, decision, and evidence history while removing archived projects from daily work.
+- Added active-run protection, personal-selection fallback, archived-project portfolio management, and workspace/role regression tests.
+
 ## 0.4.0-dev.18
 
 - Added cross-project contract copying and portable `shipwitness.contract-pack.v1` JSON exports.

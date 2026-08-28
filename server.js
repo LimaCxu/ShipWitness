@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.18';
+const serviceVersion = '0.4.0-dev.19';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -748,7 +748,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'GET' && url.pathname === '/api/projects/overview') {
         const data = await store.read();
-        const projects = data.projects.filter(item => item.workspaceId === workspaceId);
+        const projects = data.projects.filter(item => item.workspaceId === workspaceId && !item.archivedAt);
         const items = projects.map(project => {
           const runs = data.runs.filter(item => item.workspaceId === workspaceId && item.projectId === project.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
           const latestRun = runs[0] || null;
@@ -766,18 +766,44 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           return { id: project.id, name: project.name, branch: project.branch, url: project.url, state, updatedAt: latestRun?.completedAt || latestRun?.failedAt || latestRun?.createdAt || project.updatedAt, latestRun: latestRun ? { id: latestRun.id, requirement: latestRun.requirement, status: latestRun.status, verdict: latestRun.execution?.verdict || null, createdAt: latestRun.createdAt } : null, decision: decision ? { verdict: decision.verdict, owner: decision.owner, createdAt: decision.createdAt } : null, counts: { runs: runs.length, openIssues: openIssues.length, contracts: contracts.length, enabledContracts: contracts.filter(item => item.enabled).length } };
         }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         const actionableStates = new Set(['failed', 'held', 'evidence_insufficient']);
-        return json(res, 200, { summary: { projects: items.length, actionable: items.filter(item => actionableStates.has(item.state) || item.counts.openIssues > 0).length, inProgress: items.filter(item => ['queued', 'running', 'awaiting_approval'].includes(item.state)).length, approved: items.filter(item => item.state === 'approved').length }, items });
+        const archived = data.projects.filter(item => item.workspaceId === workspaceId && item.archivedAt).sort((a, b) => b.archivedAt.localeCompare(a.archivedAt)).map(project => ({ id: project.id, name: project.name, branch: project.branch, archivedAt: project.archivedAt, archivedByUserId: project.archivedByUserId, archiveReason: project.archiveReason, counts: { runs: data.runs.filter(item => item.workspaceId === workspaceId && item.projectId === project.id).length, contracts: data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === project.id).length } }));
+        return json(res, 200, { summary: { projects: items.length, actionable: items.filter(item => actionableStates.has(item.state) || item.counts.openIssues > 0).length, inProgress: items.filter(item => ['queued', 'running', 'awaiting_approval'].includes(item.state)).length, approved: items.filter(item => item.state === 'approved').length, archived: archived.length }, items, archived });
       }
       if (req.method === 'GET' && url.pathname === '/api/projects') {
         const data = await store.read();
-        const projects = data.projects.filter(item => item.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const includeArchived = url.searchParams.get('includeArchived') === 'true';
+        const projects = data.projects.filter(item => item.workspaceId === workspaceId && (includeArchived || !item.archivedAt)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         const storedProjectId = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id)?.projectId;
-        const selectedProjectId = projects.some(item => item.id === storedProjectId) ? storedProjectId : projects[0]?.id;
+        const activeProjects = projects.filter(item => !item.archivedAt); const selectedProjectId = activeProjects.some(item => item.id === storedProjectId) ? storedProjectId : activeProjects[0]?.id;
         return json(res, 200, projects.map(item => ({ ...item, selected: item.id === selectedProjectId })));
+      }
+      if (req.method === 'PATCH' && segments[0] === 'api' && segments[1] === 'projects' && segments[2] && segments[3] === 'archive') {
+        requireRole(['owner']); const input = await body(req);
+        const result = await store.update(data => {
+          const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+          if (!project) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          const archived = input.archived !== false; const now = new Date().toISOString();
+          if (archived) {
+            if (project.archivedAt) return project;
+            const activeRuns = data.runs.filter(item => item.workspaceId === workspaceId && item.projectId === project.id && ['queued', 'running'].includes(item.status));
+            if (activeRuns.length) throw Object.assign(new Error(`项目还有 ${activeRuns.length} 个等待或执行中的任务，请先处理后再归档`), { status: 409 });
+            project.archivedAt = now; project.archivedByUserId = currentUser.id; project.archiveReason = required(input.reason, '归档原因', 1000);
+            const fallback = data.projects.filter(item => item.workspaceId === workspaceId && item.id !== project.id && !item.archivedAt).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+            for (const selection of data.projectSelections.filter(item => item.workspaceId === workspaceId && item.projectId === project.id)) { if (fallback) { selection.projectId = fallback.id; selection.updatedAt = now; } }
+            if (!fallback) data.projectSelections = data.projectSelections.filter(item => item.workspaceId !== workspaceId || item.projectId !== project.id);
+          } else {
+            if (!project.archivedAt) return project;
+            delete project.archivedAt; delete project.archivedByUserId; delete project.archiveReason;
+          }
+          project.updatedAt = now;
+          appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: archived ? 'project.archived' : 'project.restored', entityType: 'project', entityId: project.id, details: archived ? { reason: project.archiveReason } : {}, at: now });
+          return project;
+        });
+        return json(res, 200, result);
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[2] && segments[3] === 'select') {
         const selected = await store.update(data => {
-          const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId); if (!project) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt); if (!project) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); const now = new Date().toISOString();
           if (!preference) { preference = { id: createId('psl'), workspaceId, userId: currentUser.id, projectId: project.id, updatedAt: now }; data.projectSelections.push(preference); }
           else { preference.projectId = project.id; preference.updatedAt = now; }
@@ -790,6 +816,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const project = await store.update(data => {
           const now = new Date().toISOString();
           const existing = data.projects.find(item => item.id === input.id && item.workspaceId === workspaceId);
+          if (existing?.archivedAt) throw Object.assign(new Error('已归档项目不能修改，请先恢复'), { status: 409 });
           const value = { id: existing?.id || createId('prj'), workspaceId, name: required(input.name || '未命名项目', '项目名称'), repo: repoPath, url: targetUrl, branch: required(input.branch || 'main', '代码分支', 255), handoffMode: input.handoffMode || 'file', githubRepo: String(input.githubRepo || existing?.githubRepo || '').trim(), updatedAt: now, createdAt: existing?.createdAt || now };
           existing ? Object.assign(existing, value) : data.projects.push(value);
           let preference = data.projectSelections.find(item => item.workspaceId === workspaceId && item.userId === currentUser.id); if (!preference) data.projectSelections.push({ id: createId('psl'), workspaceId, userId: currentUser.id, projectId: value.id, updatedAt: now }); else { preference.projectId = value.id; preference.updatedAt = now; }
@@ -800,7 +827,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'POST' && segments[0] === 'api' && segments[1] === 'projects' && segments[3] === 'preflight') {
         const data = await store.read();
-        const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
+        const project = data.projects.find(item => item.id === segments[2] && item.workspaceId === workspaceId && !item.archivedAt);
         if (!project) return json(res, 404, { error: '项目不存在' });
         const [repo, target, browserRuntime] = await Promise.all([checkRepository(project.repo), checkUrl(project.url, allowedTargetOrigins), checkBrowserAvailability()]);
         const checks = { repo, url: target, browser: target.status === 'ready' ? browserRuntime : { status: 'blocked', detail: '测试网址不可用' }, handoff: project.handoffMode === 'agent' ? { status: 'warning', detail: '编码 AI 连接器尚未配置' } : { status: 'ready', detail: project.handoffMode === 'file' ? '保存为本地返工单' : '复制任务文本' } };
@@ -815,7 +842,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       }
       if (req.method === 'POST' && (url.pathname === '/api/contracts/import/preview' || url.pathname === '/api/contracts/import')) {
         const input = await body(req); const data = await store.read();
-        const target = data.projects.find(item => item.id === input.projectId && item.workspaceId === workspaceId);
+        const target = data.projects.find(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt);
         if (!target) return json(res, 404, { error: '目标项目不存在' });
         let rawContracts = input.contracts;
         if (input.sourceProjectId) {
@@ -845,7 +872,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'PATCH' && url.pathname === '/api/contracts/bulk') {
         const input = await body(req); if (typeof input.enabled !== 'boolean') return json(res, 400, { error: 'enabled 必须是布尔值' });
         const changed = await store.update(data => {
-          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt)) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           const ids = Array.isArray(input.ids) ? new Set(input.ids.map(String)) : null; const now = new Date().toISOString(); let count = 0;
           for (const contract of data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && (!ids || ids.has(item.id)))) { if (contract.enabled === input.enabled) continue; contract.enabled = input.enabled; contract.version += 1; contract.updatedAt = now; count += 1; }
           appendAudit(data, { workspaceId, actorUserId: currentUser.id, action: 'contract.bulk_updated', entityType: 'project', entityId: input.projectId, details: { enabled: input.enabled, count }, at: now }); return { count, enabled: input.enabled };
@@ -862,7 +889,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const input = await body(req);
         const contract = await store.update(data => {
           data.contracts ||= [];
-          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt)) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           const code = required(input.code, '标准编号').toUpperCase();
           if (data.contracts.some(item => item.projectId === input.projectId && item.code === code)) throw Object.assign(new Error('标准编号已存在'), { status: 409 });
           const now = new Date().toISOString();
@@ -878,6 +905,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           data.contracts ||= [];
           const current = data.contracts.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!current) throw Object.assign(new Error('验收标准不存在'), { status: 404 });
+          if (data.projects.find(item => item.id === current.projectId)?.archivedAt) throw Object.assign(new Error('已归档项目不能修改标准，请先恢复'), { status: 409 });
           if ('title' in input) current.title = required(input.title, '标准名称');
           if ('description' in input) current.description = required(input.description, '标准描述');
           if ('category' in input) current.category = required(input.category, '标准分类');
@@ -900,7 +928,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
       if (req.method === 'POST' && url.pathname === '/api/runs') {
         const input = await body(req);
         const run = await store.update(data => {
-          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId)) throw Object.assign(new Error('项目不存在'), { status: 404 });
+          if (!data.projects.some(item => item.id === input.projectId && item.workspaceId === workspaceId && !item.archivedAt)) throw Object.assign(new Error('项目不存在或已归档'), { status: 404 });
           data.contracts ||= [];
           const supplied = Array.isArray(input.criteria) ? input.criteria : [];
           const criteria = supplied.length ? supplied.map(item => ({ ...item, steps: normalizeSteps(item.steps) })) : data.contracts.filter(item => item.workspaceId === workspaceId && item.projectId === input.projectId && item.enabled).map(item => ({ contractId: item.id, code: item.code, title: item.title, description: item.description, category: item.category, severity: item.severity, steps: normalizeSteps(item.steps), version: item.version }));
@@ -913,6 +941,7 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
         const retried = await store.update(data => {
           const source = data.runs.find(item => item.id === segments[2] && item.workspaceId === workspaceId);
           if (!source) throw Object.assign(new Error('验收记录不存在'), { status: 404 });
+          if (data.projects.find(item => item.id === source.projectId)?.archivedAt) throw Object.assign(new Error('已归档项目不能创建复验，请先恢复'), { status: 409 });
           if (!['completed', 'failed'].includes(source.status)) throw Object.assign(new Error('只有已完成或执行失败的任务才能创建重试'), { status: 409 });
           const now = new Date().toISOString(); const rootRunId = source.rootRunId || source.retryOfRunId || source.id;
           const run = { id: createId('run'), workspaceId, projectId: source.projectId, requirement: source.requirement, criteria: structuredClone(source.criteria), status: 'queued', attemptNumber: Number(source.attemptNumber || 1) + 1, retryOfRunId: source.id, rootRunId, createdByUserId: currentUser.id, createdAt: now };
