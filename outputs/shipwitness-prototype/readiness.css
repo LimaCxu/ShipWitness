@@ -1,0 +1,32 @@
+.readiness-section {
+  padding: 22px 26px;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+.readiness-section[hidden] { display: none; }
+.readiness-section > .section-title { align-items: center; }
+.readiness-section > .section-title > button { padding: 6px 9px; border: 1px solid #cfd6e3; border-radius: 5px; color: #536078; background: #fff; font-size: 8px; font-weight: 600; cursor: pointer; }
+.readiness-verdict { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; padding: 14px; border: 1px solid #dfe3ec; border-left: 4px solid #667085; border-radius: 8px; background: #fff; }
+.readiness-verdict.blocked { border-left-color: #d2554b; background: #fffafa; }
+.readiness-verdict.conditional { border-left-color: #d09a31; background: #fffcf5; }
+.readiness-verdict.ready { border-left-color: #2f9b75; background: #f7fcfa; }
+.readiness-verdict > div { display: grid; gap: 4px; }
+.readiness-verdict span { color: #8b94a7; font-size: 8px; }
+.readiness-verdict b { color: #27344f; font-size: 13px; }
+.readiness-verdict p { margin: 0; color: #778197; font-size: 8px; }
+.readiness-verdict strong { color: #344054; font-size: 11px; }
+.readiness-checks { display: grid; gap: 6px; }
+.readiness-checks article { display: grid; grid-template-columns: 24px 1fr auto; gap: 9px; align-items: start; padding: 11px; border: 1px solid #e2e6ed; border-radius: 7px; background: #fff; }
+.readiness-checks article > i { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: #667085; background: #f1f3f6; font-size: 9px; font-style: normal; font-weight: 700; }
+.readiness-checks article.pass > i { color: #027a48; background: #ecfdf3; }
+.readiness-checks article.warning > i { color: #8b6113; background: #fff7e8; }
+.readiness-checks article.block > i { color: #b42318; background: #fff1f0; }
+.readiness-checks article > div { display: grid; gap: 3px; }
+.readiness-checks article span { color: #8f98aa; font-size: 7px; text-transform: uppercase; }
+.readiness-checks article b { color: #344054; font-size: 10px; }
+.readiness-checks article p { margin: 0; color: #6f798e; font-size: 8px; line-height: 1.5; }
+.readiness-checks article small { color: #5b56c8; font-size: 8px; line-height: 1.45; }
+.readiness-checks article > em { padding: 4px 6px; border-radius: 4px; color: #667085; background: #f2f4f7; font-size: 7px; font-style: normal; }
+.readiness-checks article.pass > em { color: #027a48; background: #ecfdf3; }
+.readiness-checks article.warning > em { color: #8b6113; background: #fff7e8; }
+.readiness-checks article.block > em { color: #b42318; background: #fff1f0; }

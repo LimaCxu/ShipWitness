@@ -483,6 +483,61 @@ test('stale sending webhook delivery is reclaimed after an interrupted worker', 
   assert.equal(delivery.attempts, 2);
 });
 
+test('readiness report is owner-only, conservative and never exposes configuration secrets', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-readiness-local-'));
+  const invalidSecret = 'not-a-production-key';
+  const server = createApp({ storeFile: join(folder, 'store.json'), signingSecret: invalidSecret, publicUrl: 'http://127.0.0.1:4173' });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const ownerCookie = await setupOwner(base);
+  const ownerRequest = authenticatedRequest(ownerCookie);
+
+  const report = await ownerRequest(base, '/api/readiness');
+  assert.equal(report.status, 200);
+  assert.equal(report.body.schema, 'shipwitness.readiness.v1');
+  assert.equal(report.body.verdict.level, 'local_only');
+  assert.ok(report.body.verdict.blockers >= 3);
+  assert.equal(report.body.checks.find(item => item.id === 'postgres').status, 'block');
+  assert.equal(report.body.checks.find(item => item.id === 'https').status, 'block');
+  assert.equal(report.body.checks.find(item => item.id === 'master_key').status, 'block');
+  assert.match(report.body.checks.find(item => item.id === 'audit').detail, /^1 条审计事件哈希链完整。$/);
+  assert.equal(JSON.stringify(report.body).includes(invalidSecret), false);
+
+  const member = await ownerRequest(base, '/api/members', { method: 'POST', body: JSON.stringify({ name: '普通成员', email: 'readiness-member@example.com', password: 'member-password-123', role: 'member' }) });
+  assert.equal(member.status, 201);
+  const login = await request(base, '/api/login', { method: 'POST', body: JSON.stringify({ email: 'readiness-member@example.com', password: 'member-password-123' }) });
+  const memberRequest = authenticatedRequest(login.headers.get('set-cookie').split(';')[0]);
+  assert.equal((await memberRequest(base, '/api/readiness')).status, 403);
+});
+
+test('readiness report recognizes a fully configured production candidate', async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'shipwitness-readiness-production-'));
+  const store = new JsonStore(join(folder, 'store.json'));
+  store.health = async () => ({ status: 'ready', engine: 'postgresql' });
+  const server = createApp({
+    store,
+    signingSecret,
+    publicUrl: 'https://shipwitness.example',
+    allowedTargetOrigins: ['https://staging.example'],
+    lastVerifiedBackupAt: new Date().toISOString(),
+    securityReviewReference: 'independent-review-2026-08',
+    emailSender: async () => ({ messageId: 'test-message' }),
+    emailConfiguration: { enabled: true }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const cookie = await setupOwner(base);
+
+  const report = await authenticatedRequest(cookie)(base, '/api/readiness');
+  assert.equal(report.status, 200);
+  assert.equal(report.body.verdict.level, 'production_candidate');
+  assert.equal(report.body.verdict.blockers, 0);
+  assert.equal(report.body.verdict.warnings, 0);
+  assert.ok(report.body.checks.every(item => item.status === 'pass'));
+});
+
 test('authentication, roles and workspace isolation prevent cross-tenant access', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shipwitness-auth-'));
   const server = createApp({ storeFile: join(folder, 'store.json') });

@@ -2,6 +2,12 @@
 
 All notable changes are documented here. ShipWitness uses development-version suffixes until the public 1.0 compatibility contract is complete.
 
+## 0.4.0-dev.20
+
+- Added an owner-only deployment-readiness center with local-only, controlled-pilot, and production-candidate verdicts.
+- Added conservative checks for PostgreSQL, HTTPS, master-key format, audit integrity, verified-backup freshness, independent security review, notification delivery, operations health, and target policy.
+- Added a secret-free JSON report export, deployment evidence metadata, role enforcement, and local/production configuration-matrix tests.
+
 ## 0.4.0-dev.19
 
 - Added owner-only project archival and restoration with mandatory reasons and audit events.

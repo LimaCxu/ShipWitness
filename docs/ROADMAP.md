@@ -28,6 +28,7 @@
 - [x] Evidence-derived project portfolio with release state, work counts, and direct actions
 - [x] Reusable acceptance-contract packs with previewed conflicts, safe import/export, and bulk state changes
 - [x] Reversible project archival with owner authorization, active-work protection, and preserved evidence
+- [x] Owner-only deployment readiness center with conservative environment grading and exportable evidence
 
 ## 1.0 — Self-hosted release gate
 

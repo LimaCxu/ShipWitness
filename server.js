@@ -10,7 +10,7 @@ import { PostgresStore } from './lib/postgres-store.js';
 import { appendAudit, verifyAuditChain } from './lib/audit.js';
 import { buildHandoffPackage, createGitHubIssue } from './lib/handoff.js';
 import { evaluateReleaseGate } from './lib/release-gate.js';
-import { createSigningKey, decryptSecret, encryptSecret, signPayload, verifySignedPayload } from './lib/signing.js';
+import { createSigningKey, decryptSecret, encryptSecret, keyFromSecret, signPayload, verifySignedPayload } from './lib/signing.js';
 import { sendWebhook, validateWebhookUrl } from './lib/webhook.js';
 import { createSmtpSender, smtpConfig } from './lib/email.js';
 import { fetchTarget, targetOrigins, validateTargetUrl } from './lib/target-policy.js';
@@ -22,7 +22,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(root, 'outputs/shipwitness-prototype');
 const defaultStore = process.env.SHIPWITNESS_STORE_FILE || join(root, 'data/store.json');
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8' };
-const serviceVersion = '0.4.0-dev.19';
+const serviceVersion = '0.4.0-dev.20';
 const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'referrer-policy': 'no-referrer',
@@ -229,7 +229,7 @@ const retentionPreview = (data, workspaceId, asOf = new Date()) => {
   return { operationalDays, asOf: asOf.toISOString(), cutoff: cutoff.toISOString(), counts, total, token, ids };
 };
 
-export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
+export function createApp({ storeFile = defaultStore, databaseUrl = process.env.DATABASE_URL, store: providedStore, githubIssueCreator = createGitHubIssue, signingSecret = process.env.SHIPWITNESS_MASTER_KEY, webhookSender = sendWebhook, webhookUrlValidator = validateWebhookUrl, webhookRetryBaseMs = 60_000, emailConfiguration = smtpConfig(), emailSender, emailRetryBaseMs = 60_000, publicUrl = normalizedPublicUrl(process.env.SHIPWITNESS_PUBLIC_URL), allowedTargetOrigins = targetOrigins(), lastVerifiedBackupAt = process.env.SHIPWITNESS_LAST_VERIFIED_BACKUP_AT, securityReviewReference = process.env.SHIPWITNESS_SECURITY_REVIEW_REFERENCE, browserRunExecutor = executeBrowserRun, basicRunExecutor = executeRun } = {}) {
   const store = providedStore || (databaseUrl ? new PostgresStore(databaseUrl) : new JsonStore(storeFile));
   const artifactsDir = process.env.SHIPWITNESS_ARTIFACTS_DIR || join(dirname(storeFile), 'evidence');
   const loginAttempts = new Map();
@@ -546,6 +546,30 @@ export function createApp({ storeFile = defaultStore, databaseUrl = process.env.
           webhooks: { pending: deliveries.filter(item => ['queued', 'retrying', 'sending'].includes(item.status)).length, failed: deliveries.filter(item => item.status === 'failed').length },
           checkedAt: new Date(now).toISOString()
         });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/readiness') {
+        requireRole(['owner']);
+        const now = new Date(); const storage = await store.health(); const workspaceAudit = authData.auditEvents.filter(item => item.workspaceId === workspaceId); const audit = verifyAuditChain(workspaceAudit);
+        let masterKeyValid = false; try { keyFromSecret(signingSecret); masterKeyValid = true; } catch {}
+        const publicHttps = Boolean(publicUrl && new URL(publicUrl).protocol === 'https:');
+        const backupTime = lastVerifiedBackupAt ? new Date(lastVerifiedBackupAt) : null; const backupAgeHours = backupTime ? (now.getTime() - backupTime.getTime()) / 3_600_000 : null; const backupFresh = Number.isFinite(backupAgeHours) && backupAgeHours >= -0.1 && backupAgeHours <= 24;
+        const workspaceRuns = authData.runs.filter(item => item.workspaceId === workspaceId); const staleRuns = workspaceRuns.filter(item => item.status === 'running' && now.getTime() - new Date(item.startedAt || 0).getTime() > 15 * 60_000).length;
+        const webhookFailures = authData.webhookDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length; const emailFailures = authData.emailDeliveries.filter(item => item.workspaceId === workspaceId && item.status === 'failed').length;
+        const checks = [
+          { id: 'postgres', category: '基础设施', label: '生产数据库', status: storage.engine === 'postgresql' ? 'pass' : 'block', detail: storage.engine === 'postgresql' ? 'PostgreSQL 已连接并通过健康检查。' : '当前仍使用本地 JSON 文件，正式部署必须切换 PostgreSQL。', action: storage.engine === 'postgresql' ? null : '配置 DATABASE_URL 并执行迁移' },
+          { id: 'https', category: '访问安全', label: 'HTTPS 公网地址', status: publicHttps ? 'pass' : 'block', detail: publicHttps ? '已配置外部 HTTPS 地址，邀请和任务链接可安全生成。' : '未配置有效的 SHIPWITNESS_PUBLIC_URL HTTPS 地址。', action: publicHttps ? null : '在反向代理启用 HTTPS，并配置 SHIPWITNESS_PUBLIC_URL' },
+          { id: 'master_key', category: '访问安全', label: '主密钥', status: masterKeyValid ? 'pass' : 'block', detail: masterKeyValid ? '32 字节 Base64 主密钥格式有效。' : '主密钥缺失或格式无效，签名和加密材料无法安全工作。', action: masterKeyValid ? null : '生成并安全保存 SHIPWITNESS_MASTER_KEY' },
+          { id: 'audit', category: '证据治理', label: '审计链完整性', status: audit.valid ? 'pass' : 'block', detail: audit.valid ? `${audit.checked} 条审计事件哈希链完整。` : `审计链异常：${audit.brokenEventId ? `事件 ${audit.brokenEventId}` : '完整性校验失败'}`, action: audit.valid ? null : '停止发布并调查审计链异常' },
+          { id: 'backup', category: '灾备恢复', label: '24 小时内验证备份', status: backupFresh ? 'pass' : 'warning', detail: backupFresh ? `最近验证备份距今 ${backupAgeHours.toFixed(1)} 小时。` : '服务无法确认最近 24 小时内存在已验证备份。', action: backupFresh ? null : '运行 backup、backup:verify，并注入 SHIPWITNESS_LAST_VERIFIED_BACKUP_AT' },
+          { id: 'security_review', category: '访问安全', label: '外部安全评审', status: securityReviewReference ? 'pass' : 'warning', detail: securityReviewReference ? '部署环境已登记外部安全评审参考。' : '尚未登记独立安全评审结果。', action: securityReviewReference ? null : '完成独立安全评审并配置 SHIPWITNESS_SECURITY_REVIEW_REFERENCE' },
+          { id: 'email', category: '通知送达', label: '邮件通知', status: emailEnabled && emailFailures === 0 ? 'pass' : 'warning', detail: !emailEnabled ? 'SMTP 未启用，邀请、失败和审批需要成员主动查看。' : emailFailures ? `${emailFailures} 封邮件最终投递失败。` : 'SMTP 已启用且没有最终失败投递。', action: !emailEnabled ? '配置 TLS SMTP 并发送测试邮件' : emailFailures ? '处理失败邮件并重试' : null },
+          { id: 'operations', category: '运行健康', label: '任务与 Webhook', status: staleRuns || webhookFailures ? 'warning' : 'pass', detail: staleRuns || webhookFailures ? `${staleRuns} 个超时任务，${webhookFailures} 个 Webhook 最终失败。` : '没有超时任务或最终失败 Webhook。', action: staleRuns || webhookFailures ? '在告警中心确认并处理异常' : null },
+          { id: 'target_policy', category: '执行边界', label: '验收目标白名单', status: 'pass', detail: `${allowedTargetOrigins.length} 个外部来源已明确允许；其他非本机来源默认拒绝。`, action: null }
+        ];
+        const blockers = checks.filter(item => item.status === 'block').length; const warnings = checks.filter(item => item.status === 'warning').length;
+        const level = blockers ? 'local_only' : warnings ? 'pilot_ready' : 'production_candidate';
+        const labels = { local_only: '仅限本地或开发环境', pilot_ready: '可进入受控试点', production_candidate: '具备公网候选条件' };
+        return json(res, 200, { schema: 'shipwitness.readiness.v1', version: serviceVersion, generatedAt: now.toISOString(), verdict: { level, label: labels[level], blockers, warnings, passed: checks.length - blockers - warnings }, checks });
       }
       if (req.method === 'POST' && url.pathname === '/api/alerts/refresh') {
         requireRole(['owner', 'approver']);
