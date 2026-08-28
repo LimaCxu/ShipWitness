@@ -27,7 +27,9 @@
 - [x] Scoped machine API keys and deterministic CI release-gate exit codes
 - [x] Ed25519 signed release dossiers and offline verification
 - [x] HMAC-signed webhook delivery queue with retry state
-- Signed versioned release bundles and upgrade/rollback tooling
+- [x] Checksummed versioned release bundles and tag-driven release workflow
+- [x] Upgrade preflight for backup freshness, key validity, and schema compatibility
+- Automated rollback orchestration and key rotation tooling
 - [x] Backup manifest, integrity verification, and restore drill tooling
 - Stable extension API for coding-agent handoff
 - End-to-end security review and deployment guide

@@ -16,7 +16,7 @@ services:
 
   shipwitness:
     build: .
-    image: shipwitness:0.4.0-dev.4
+    image: shipwitness:0.4.0-dev.5
     depends_on:
       postgres:
         condition: service_healthy

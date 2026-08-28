@@ -4,7 +4,7 @@
 
 ShipWitness 是面向独立开发者和非技术产品负责人的开源发布验收台。它把原始需求转成版本化验收标准，保存执行证据、返工单和负责人决定，并在证据不足时明确拒绝“猜测通过”。
 
-> 当前版本：`0.4.0-dev.4`。已具备真实浏览器验收、证据返工闭环、安全工作区、PostgreSQL 灾备、哈希链审计，以及可接入 CI/CD 的发布门禁和签名卷宗。正式公网部署仍需 HTTPS 和完整安全审查。
+> 当前版本：`0.4.0-dev.5`。已具备真实浏览器验收、证据返工闭环、安全工作区、PostgreSQL 灾备、哈希链审计、CI/CD 发布门禁，以及可校验的版本化交付包。正式公网部署仍需 HTTPS 和完整安全审查。
 
 ## 已实现
 
@@ -23,6 +23,8 @@ ShipWitness 是面向独立开发者和非技术产品负责人的开源发布�
 - 权限受限且仅显示一次的机器 API Key、稳定退出码发布门禁 CLI
 - Ed25519 签名验收卷宗、离线验签 CLI 和加密私钥存储
 - HMAC 签名发布 Webhook、持久化投递队列和指数退避重试
+- 带逐文件 SHA-256 清单的版本化发布包、Tag/版本一致性门禁
+- 升级前备份新鲜度、主密钥和数据库迁移兼容性检查
 - 基础执行证据：仓库状态、HTTP 响应、页面标题、耗时和内容指纹
 - 真实浏览器步骤：同源打开、点击、输入、可见性、文字和网址断言
 - 浏览器证据：逐步结果、最终网址、网络响应摘要和完整页面截图
@@ -66,7 +68,7 @@ npm run check
 
 没有配置浏览器步骤的标准只执行基础环境检查；没有明确结果断言的路径仍会标记为“证据不足”。浏览器执行器限制同源跳转、单标准最多 20 步，并且不会执行任意脚本。
 
-路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
+路线图见 [docs/ROADMAP.md](docs/ROADMAP.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)，部署指南见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)，贡献规则见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

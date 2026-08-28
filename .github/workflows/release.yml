@@ -1,0 +1,33 @@
+name: Release bundle
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Require tag and package versions to match
+        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+      - name: Build and verify release bundle
+        env:
+          SHIPWITNESS_RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          npm run release:build
+          npm run release:verify -- "dist/shipwitness-${GITHUB_REF_NAME#v}"
+          cd dist
+          sha256sum --check "shipwitness-${GITHUB_REF_NAME#v}.tar.gz.sha256"
+      - name: Publish immutable GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 --verify-tag --generate-notes --title "ShipWitness $GITHUB_REF_NAME"

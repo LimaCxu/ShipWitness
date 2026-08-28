@@ -8,4 +8,5 @@ data/*.tmp
 data/evidence/
 coverage/
 backups/
+dist/
 *.log

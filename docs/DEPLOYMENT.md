@@ -50,3 +50,34 @@ After restore, start ShipWitness against the restored database, check `/api/heal
 ## Rollback boundary
 
 Database migrations are forward-only. Before every upgrade, create and verify a backup. Application rollback means restoring the previous image and its matching database backup together; never point an older application image at a newer schema without a tested compatibility statement.
+
+## Safe upgrade sequence
+
+1. Record the currently running image tag and health response.
+2. Create a new backup and copy it off the Docker host.
+3. Run the target version's preflight before starting the target image:
+
+```bash
+DATABASE_URL='postgresql://...' \
+SHIPWITNESS_MASTER_KEY='base64-key-from-secret-store' \
+npm run upgrade:check -- /path/to/fresh-backup
+```
+
+The command fails closed when the backup hash is invalid or older than 24 hours, the master key is malformed, the database is uninitialized, or the database schema is newer than the target application. It prints all pending numbered migrations without applying them. For an intentionally older but separately verified backup, set `SHIPWITNESS_ALLOW_STALE_BACKUP=YES` explicitly.
+
+4. Pull or build the exact versioned image; never deploy `latest`.
+5. Start one application instance and wait for `/api/health` to report the expected version and PostgreSQL engine.
+6. Log in, open a historical run, verify one screenshot and one signed dossier, then exercise a non-production webhook receiver.
+7. Only then replace remaining instances.
+
+If any post-upgrade check fails, stop the new image. Restore the previous application image **and** the matching verified database/evidence backup as one unit. Keep the failed upgrade backup for diagnosis.
+
+## Build and verify a release bundle
+
+```bash
+npm run release:build
+npm run release:verify -- dist/shipwitness-<version>
+(cd dist && shasum -a 256 -c shipwitness-<version>.tar.gz.sha256)
+```
+
+The bundle contains the Docker build context, Compose configuration, migrations, operational scripts, documentation, and `RELEASE.json` with a SHA-256 digest for every payload file. A pushed `v<package-version>` tag runs the same checks and publishes the archive plus its checksum to GitHub Releases. The workflow refuses mismatched tag and package versions.

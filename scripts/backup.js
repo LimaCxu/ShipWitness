@@ -5,6 +5,9 @@ import { spawn } from 'node:child_process';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL 不能为空');
+const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+const migrationFiles = (await readdir(new URL('../migrations/', import.meta.url))).filter(name => /^\d+_.+\.sql$/.test(name));
+const schemaVersion = Math.max(...migrationFiles.map(name => Number(name.match(/^\d+/)[0])));
 const evidenceDir = resolve(process.env.SHIPWITNESS_ARTIFACTS_DIR || 'data/evidence');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const destination = resolve(process.argv[2] || join('backups', stamp));
@@ -33,6 +36,6 @@ async function collect(folder, prefix = '') {
   }
 }
 try { await collect(join(destination, 'evidence')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-const manifest = { schema: 'shipwitness.backup.v1', createdAt: new Date().toISOString(), database: { file: basename(dumpFile), sha256: await hashFile(dumpFile) }, evidence: evidenceFiles };
+const manifest = { schema: 'shipwitness.backup.v1', createdAt: new Date().toISOString(), applicationVersion: pkg.version, schemaVersion, database: { file: basename(dumpFile), sha256: await hashFile(dumpFile) }, evidence: evidenceFiles };
 await writeFile(join(destination, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
 console.log(JSON.stringify({ ok: true, destination, evidenceFiles: evidenceFiles.length }, null, 2));
